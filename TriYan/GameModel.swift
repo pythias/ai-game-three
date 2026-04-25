@@ -116,7 +116,7 @@ final class GameModel {
         return true
     }
 
-    func move(_ direction: MoveDirection) -> MoveResult {
+    func move(_ direction: MoveDirection, commit: Bool = true) -> MoveResult {
         var working = cells
         var movements: [TileMovement] = []
         var merges: [MergeEvent] = []
@@ -144,7 +144,7 @@ final class GameModel {
             }
         }
 
-        if didMove {
+        if didMove && commit {
             cells = working
         }
 

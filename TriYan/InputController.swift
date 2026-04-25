@@ -1,71 +1,45 @@
 import UIKit
 
+enum SwipeDirection {
+    case up, down, left, right
+}
+
 final class InputController: NSObject {
-    var onSwipe: ((MoveDirection) -> Void)?
+    var onSwipe: ((SwipeDirection) -> Void)?
 
     private weak var view: UIView?
-    private var recognizers: [UISwipeGestureRecognizer] = []
+    private var panRecognizer: UIPanGestureRecognizer?
 
     init(view: UIView) {
         self.view = view
         super.init()
-        installRecognizers(on: view)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.minimumNumberOfTouches = 1
+        pan.maximumNumberOfTouches = 1
+        view.addGestureRecognizer(pan)
+        panRecognizer = pan
     }
 
     deinit {
-        recognizers.forEach { recognizer in
-            view?.removeGestureRecognizer(recognizer)
+        if let r = panRecognizer {
+            view?.removeGestureRecognizer(r)
         }
     }
 
-    private func installRecognizers(on view: UIView) {
-        let pairs: [(UISwipeGestureRecognizer.Direction, MoveDirection)] = [
-            (.up, .up),
-            (.down, .down),
-            (.left, .left),
-            (.right, .right)
-        ]
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
 
-        for pair in pairs {
-            let recognizer = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
-            recognizer.direction = pair.0
-            recognizer.cancelsTouchesInView = true
-            recognizer.name = directionName(for: pair.1)
-            view.addGestureRecognizer(recognizer)
-            recognizers.append(recognizer)
-        }
-    }
+        let translation = recognizer.translation(in: view)
+        let dx = translation.x
+        let dy = translation.y
+        let threshold: CGFloat = 10
 
-    @objc private func handleSwipe(_ recognizer: UISwipeGestureRecognizer) {
-        guard let direction = moveDirection(from: recognizer) else { return }
-        onSwipe?(direction)
-    }
+        guard max(abs(dx), abs(dy)) >= threshold else { return }
 
-    private func moveDirection(from recognizer: UISwipeGestureRecognizer) -> MoveDirection? {
-        switch recognizer.direction {
-        case .up:
-            return .up
-        case .down:
-            return .down
-        case .left:
-            return .left
-        case .right:
-            return .right
-        default:
-            return nil
-        }
-    }
-
-    private func directionName(for direction: MoveDirection) -> String {
-        switch direction {
-        case .up:
-            return "swipeUp"
-        case .down:
-            return "swipeDown"
-        case .left:
-            return "swipeLeft"
-        case .right:
-            return "swipeRight"
+        if abs(dx) > abs(dy) {
+            onSwipe?(dx > 0 ? .right : .left)
+        } else {
+            onSwipe?(dy > 0 ? .down : .up)
         }
     }
 }
