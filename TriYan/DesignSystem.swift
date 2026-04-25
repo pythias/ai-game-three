@@ -12,6 +12,7 @@ enum DesignSystem {
         static let cardBackground = UIColor(hex: "#FFF8EE")
         static let buttonBackground = UIColor(hex: "#F08B4B")
         static let buttonSecondaryBackground = UIColor(hex: "#F2E5D5")
+        static let achievementBackground = UIColor(hex: "#3C7D6B")
 
         static func tileBackground(for value: Int) -> UIColor {
             switch value {
@@ -51,6 +52,7 @@ enum DesignSystem {
         static let hudTitleWidth: CGFloat = 88
         static let hudScoreWidth: CGFloat = 112
         static let hudButtonSize = CGSize(width: 36, height: 36)
+        static let previewTileSize = CGSize(width: 42, height: 42)
         static let modalCardSize = CGSize(width: 314, height: 274)
         static let modalCornerRadius: CGFloat = 22
         static let modalButtonHeight: CGFloat = 48
@@ -70,6 +72,7 @@ enum DesignSystem {
         static let moveDuration: TimeInterval = 0.15
         static let spawnDuration: TimeInterval = 0.15
         static let mergeDuration: TimeInterval = 0.2
+        static let previewDuration: TimeInterval = 0.16
     }
 
     // MARK: - Fonts
@@ -112,6 +115,10 @@ enum DesignSystem {
 
         static func historyRowBodyFont() -> UIFont {
             rounded(14, weight: .medium)
+        }
+
+        static func achievementFont() -> UIFont {
+            rounded(16, weight: .bold)
         }
 
         static func tileFont(for value: Int) -> UIFont {

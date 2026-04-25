@@ -8,19 +8,21 @@ final class GameScene: SKScene {
     private let spawner = Spawner()
     private let statsStore = StatsStore.shared
     private let gameCenterService = GameCenterService.shared
+    private let audioManager = AudioManager.shared
 
     private var tileNodes: [GridPosition: SKNode] = [:]
     private var gridNode: SKNode!
 
     private var titleLabel: SKLabelNode!
     private var nextTitleLabel: SKLabelNode!
-    private var nextValueLabel: SKLabelNode!
+    private var nextPreviewNode: SKNode!
     private var scoreTitleLabel: SKLabelNode!
     private var scoreValueLabel: SKLabelNode!
     private var historyButton: SKShapeNode!
 
     private var inputController: InputController?
     private var overlayNode: SKNode?
+    private var achievementToastNode: SKNode?
 
     private var isAnimating = false
     private var scenePhase: ScenePhase = .playing
@@ -58,6 +60,7 @@ final class GameScene: SKScene {
         guard gridNode != nil else { return }
         layoutScene()
         rebuildTileNodes()
+        updatePreviewTile(animated: false)
         rebuildOverlayForCurrentPhase()
     }
 
@@ -79,9 +82,8 @@ final class GameScene: SKScene {
         nextTitleLabel.text = "下一个"
         addChild(nextTitleLabel)
 
-        nextValueLabel = makeLabel(font: DesignSystem.Fonts.hudValueFont(), color: DesignSystem.Colors.textDark)
-        nextValueLabel.text = "1"
-        addChild(nextValueLabel)
+        nextPreviewNode = SKNode()
+        addChild(nextPreviewNode)
 
         scoreTitleLabel = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
         scoreTitleLabel.horizontalAlignmentMode = .right
@@ -137,7 +139,7 @@ final class GameScene: SKScene {
         )
 
         nextTitleLabel.position = CGPoint(x: frame.midX, y: headerY - 2)
-        nextValueLabel.position = CGPoint(x: frame.midX, y: headerY - 28)
+        nextPreviewNode.position = CGPoint(x: frame.midX, y: headerY - 38)
 
         scoreTitleLabel.position = CGPoint(x: frame.maxX - rightInset - padding, y: headerY - 2)
         scoreValueLabel.position = CGPoint(x: frame.maxX - rightInset - padding, y: headerY - 28)
@@ -179,6 +181,8 @@ final class GameScene: SKScene {
         historyReturnPhase = .playing
         didRecordCurrentGame = false
         isAnimating = false
+        achievementToastNode?.removeFromParent()
+        achievementToastNode = nil
 
         model.reset()
         tileNodes.values.forEach { $0.removeFromParent() }
@@ -189,6 +193,7 @@ final class GameScene: SKScene {
             let firstTile = spawner.takePreviewTile()
             model.place(firstTile, at: pos1)
             spawnTile(at: pos1, value: firstTile.value)
+            audioManager.playSpawn()
             spawner.refreshPreview(for: model.board)
         }
 
@@ -196,6 +201,7 @@ final class GameScene: SKScene {
             let secondTile = spawner.takePreviewTile()
             model.place(secondTile, at: pos2)
             spawnTile(at: pos2, value: secondTile.value)
+            audioManager.playSpawn()
             spawner.refreshPreview(for: model.board)
         }
 
@@ -212,6 +218,13 @@ final class GameScene: SKScene {
         }
 
         isAnimating = true
+        if result.merges.isEmpty {
+            audioManager.playMove()
+        } else if result.merges.contains(where: { $0.resultValue >= 48 }) {
+            audioManager.playBigMerge()
+        } else {
+            audioManager.playMerge()
+        }
         animateMove(result: result)
     }
 
@@ -248,6 +261,7 @@ final class GameScene: SKScene {
             let spawnedTile = spawner.takePreviewTile()
             model.place(spawnedTile, at: spawnPos)
             spawnTile(at: spawnPos, value: spawnedTile.value)
+            audioManager.playSpawn()
         }
         spawner.refreshPreview(for: model.board)
 
@@ -300,11 +314,14 @@ final class GameScene: SKScene {
         guard let view else { return SKNode() }
         let gridSize = DesignSystem.Layout.gridSize(in: view)
         let cellSize = DesignSystem.Layout.cellSize(gridSize: gridSize)
+        return makeTileNode(value: value, size: cellSize)
+    }
 
+    private func makeTileNode(value: Int, size: CGFloat) -> SKNode {
         let container = SKNode()
 
         let background = SKShapeNode(
-            rectOf: CGSize(width: cellSize, height: cellSize),
+            rectOf: CGSize(width: size, height: size),
             cornerRadius: DesignSystem.Layout.tileCornerRadius
         )
         background.fillColor = DesignSystem.Colors.tileBackground(for: value)
@@ -312,8 +329,9 @@ final class GameScene: SKScene {
         container.addChild(background)
 
         let label = SKLabelNode(text: "\(value)")
-        label.fontName = DesignSystem.Fonts.tileFont(for: value).fontName
-        label.fontSize = DesignSystem.Fonts.tileFont(for: value).pointSize
+        let tileFont = DesignSystem.Fonts.tileFont(for: value)
+        label.fontName = tileFont.fontName
+        label.fontSize = min(tileFont.pointSize, size * 0.58)
         label.fontColor = DesignSystem.Colors.tileText(for: value)
         label.verticalAlignmentMode = .center
         label.horizontalAlignmentMode = .center
@@ -343,7 +361,26 @@ final class GameScene: SKScene {
 
     private func updateHUD() {
         scoreValueLabel.text = formatScore(model.score)
-        nextValueLabel.text = "\(spawner.previewTile.value)"
+        updatePreviewTile(animated: true)
+    }
+
+    private func updatePreviewTile(animated: Bool) {
+        guard nextPreviewNode != nil else { return }
+
+        nextPreviewNode.removeAllChildren()
+
+        let tile = makeTileNode(
+            value: spawner.previewTile.value,
+            size: DesignSystem.Layout.previewTileSize.width
+        )
+        tile.setScale(animated ? 0.72 : 1)
+        nextPreviewNode.addChild(tile)
+
+        guard animated else { return }
+
+        let pop = SKAction.scale(to: 1, duration: DesignSystem.Animation.previewDuration)
+        pop.timingMode = .easeOut
+        tile.run(pop)
     }
 
     private func formatScore(_ score: Int) -> String {
@@ -353,7 +390,11 @@ final class GameScene: SKScene {
     // MARK: - Overlays
 
     private func showGameOver() {
-        recordCurrentGameIfNeeded()
+        let wasGameOver = scenePhase == .gameOver
+        let achievementUnlocks = recordCurrentGameIfNeeded()
+        if !wasGameOver {
+            audioManager.playGameOver()
+        }
         scenePhase = .gameOver
         hideOverlay()
 
@@ -410,6 +451,7 @@ final class GameScene: SKScene {
 
         overlayNode = overlay
         addChild(overlay)
+        showAchievementToasts(achievementUnlocks)
     }
 
     private func showHistory(from phase: ScenePhase) {
@@ -497,20 +539,26 @@ final class GameScene: SKScene {
         return row
     }
 
-    private func recordCurrentGameIfNeeded() {
-        guard !didRecordCurrentGame else { return }
+    private func recordCurrentGameIfNeeded() -> [AchievementUnlock] {
+        guard !didRecordCurrentGame else { return [] }
 
         let previousBest = statsStore.bestScore()
         statsStore.recordGame(
             resultScore: model.score,
             histogram: model.tileHistogramFromThree()
         )
+        let snapshot = statsStore.snapshot()
 
         if model.score >= previousBest {
             gameCenterService.submit(score: model.score)
         }
 
         didRecordCurrentGame = true
+        return gameCenterService.reportAchievements(
+            score: model.score,
+            maxTile: model.maxTileValue,
+            gamesPlayed: snapshot.gamesPlayed
+        )
     }
 
     private func closeHistoryOverlay() {
@@ -573,15 +621,19 @@ final class GameScene: SKScene {
         while let candidate = current {
             switch candidate.name {
             case NodeName.historyHudButton:
+                audioManager.playButton()
                 showHistory(from: scenePhase)
                 return
             case NodeName.gameOverHistoryButton:
+                audioManager.playButton()
                 showHistory(from: .gameOver)
                 return
             case NodeName.restartButton:
+                audioManager.playButton()
                 startNewGame()
                 return
             case NodeName.closeHistoryButton:
+                audioManager.playButton()
                 closeHistoryOverlay()
                 return
             default:
@@ -620,6 +672,54 @@ final class GameScene: SKScene {
         button.addChild(label)
 
         return button
+    }
+
+    private func showAchievementToasts(_ unlocks: [AchievementUnlock]) {
+        guard !unlocks.isEmpty else { return }
+
+        achievementToastNode?.removeFromParent()
+        let toast = makeAchievementToast(title: unlocks[0].title)
+        achievementToastNode = toast
+        addChild(toast)
+
+        let wait = SKAction.wait(forDuration: 2.1)
+        let fade = SKAction.group([
+            SKAction.fadeOut(withDuration: 0.2),
+            SKAction.moveBy(x: 0, y: 12, duration: 0.2)
+        ])
+        toast.run(SKAction.sequence([wait, fade, .removeFromParent()])) { [weak self] in
+            self?.achievementToastNode = nil
+            self?.showAchievementToasts(Array(unlocks.dropFirst()))
+        }
+    }
+
+    private func makeAchievementToast(title: String) -> SKNode {
+        let toast = SKNode()
+        toast.zPosition = 140
+        toast.alpha = 0
+        toast.position = CGPoint(x: frame.midX, y: frame.maxY - 92)
+
+        let width = min(frame.width - 40, 310)
+        let background = SKShapeNode(
+            rectOf: CGSize(width: width, height: 54),
+            cornerRadius: 18
+        )
+        background.fillColor = DesignSystem.Colors.achievementBackground
+        background.strokeColor = UIColor.white.withAlphaComponent(0.55)
+        background.lineWidth = 1
+        toast.addChild(background)
+
+        let label = makeLabel(font: DesignSystem.Fonts.achievementFont(), color: DesignSystem.Colors.textLight)
+        label.text = "成就达成  \(title)"
+        label.position = CGPoint(x: 0, y: -1)
+        toast.addChild(label)
+
+        let fadeIn = SKAction.fadeIn(withDuration: 0.16)
+        let slide = SKAction.moveBy(x: 0, y: -8, duration: 0.16)
+        slide.timingMode = .easeOut
+        toast.run(SKAction.group([fadeIn, slide]))
+
+        return toast
     }
 }
 

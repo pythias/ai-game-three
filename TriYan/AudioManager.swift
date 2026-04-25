@@ -1,15 +1,17 @@
 import AVFoundation
 import SpriteKit
 
-final class AudioManager {
+final class AudioManager: NSObject, AVAudioPlayerDelegate {
     static let shared = AudioManager()
 
     private var bgMusicPlayer: AVAudioPlayer?
+    private var soundPlayers: [AVAudioPlayer] = []
     private var isMuted = false
 
-    private init() {
+    private override init() {
         try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
         try? AVAudioSession.sharedInstance().setActive(true)
+        super.init()
     }
 
     // MARK: - Background Music
@@ -50,7 +52,7 @@ final class AudioManager {
 
     func playBigMerge() {
         guard !isMuted else { return }
-        playSound("bigmerge", ext: "wav")
+        playSound("combo", ext: "wav")
     }
 
     func playSpawn() {
@@ -65,7 +67,7 @@ final class AudioManager {
 
     func playButton() {
         guard !isMuted else { return }
-        playSound("button", ext: "wav")
+        playSound("move", ext: "wav", volume: 0.35)
     }
 
     func playCombo() {
@@ -88,16 +90,22 @@ final class AudioManager {
 
     // MARK: - Private
 
-    private func playSound(_ name: String, ext: String) {
+    private func playSound(_ name: String, ext: String, volume: Float = 0.6) {
         guard let url = Bundle.main.url(forResource: name, withExtension: ext) else { return }
         do {
             let player = try AVAudioPlayer(contentsOf: url)
-            player.volume = 0.6
+            player.delegate = self
+            player.volume = volume
             player.prepareToPlay()
             player.play()
+            soundPlayers.append(player)
         } catch {
             print("AudioManager: failed to play \(name) - \(error)")
         }
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        soundPlayers.removeAll { $0 === player }
     }
 
     func playSoundViaSKAction(_ name: String, ext: String, in scene: SKScene) {
