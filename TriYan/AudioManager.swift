@@ -1,17 +1,21 @@
 import AVFoundation
+import AudioToolbox
 import SpriteKit
 
-final class AudioManager: NSObject, AVAudioPlayerDelegate {
+final class AudioManager {
     static let shared = AudioManager()
 
     private var bgMusicPlayer: AVAudioPlayer?
-    private var soundPlayers: [AVAudioPlayer] = []
+    private var soundIDs: [String: SystemSoundID] = [:]
     private var isMuted = false
 
-    private override init() {
+    private init() {
         try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
-        super.init()
+        preloadSoundEffects()
+    }
+
+    deinit {
+        soundIDs.values.forEach { AudioServicesDisposeSystemSoundID($0) }
     }
 
     // MARK: - Background Music
@@ -90,22 +94,39 @@ final class AudioManager: NSObject, AVAudioPlayerDelegate {
 
     // MARK: - Private
 
-    private func playSound(_ name: String, ext: String, volume: Float = 0.6) {
-        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else { return }
-        do {
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.delegate = self
-            player.volume = volume
-            player.prepareToPlay()
-            player.play()
-            soundPlayers.append(player)
-        } catch {
-            print("AudioManager: failed to play \(name) - \(error)")
+    private func preloadSoundEffects() {
+        [
+            ("move", "wav"),
+            ("merge", "wav"),
+            ("combo", "wav"),
+            ("spawn", "wav"),
+            ("gameover", "wav")
+        ].forEach { name, ext in
+            preloadSound(name, ext: ext)
         }
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        soundPlayers.removeAll { $0 === player }
+    private func preloadSound(_ name: String, ext: String) {
+        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else { return }
+
+        let key = soundKey(name, ext: ext)
+        var soundID: SystemSoundID = 0
+        let status = AudioServicesCreateSystemSoundID(url as CFURL, &soundID)
+        if status == kAudioServicesNoError {
+            soundIDs[key] = soundID
+        } else {
+            print("AudioManager: failed to preload \(name) - \(status)")
+        }
+    }
+
+    private func playSound(_ name: String, ext: String, volume: Float = 0.6) {
+        let key = soundKey(name, ext: ext)
+        guard let soundID = soundIDs[key] else { return }
+        AudioServicesPlaySystemSound(soundID)
+    }
+
+    private func soundKey(_ name: String, ext: String) -> String {
+        "\(name).\(ext)"
     }
 
     func playSoundViaSKAction(_ name: String, ext: String, in scene: SKScene) {

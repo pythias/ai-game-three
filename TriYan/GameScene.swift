@@ -11,13 +11,22 @@ final class GameScene: SKScene {
     private let audioManager = AudioManager.shared
 
     private var tileNodes: [GridPosition: SKNode] = [:]
+    private var tileTextureCache: [TileTextureKey: SKTexture] = [:]
+    private var backgroundTextureCache: [BackgroundTextureKey: SKTexture] = [:]
+    private var backgroundNode: SKSpriteNode!
     private var gridNode: SKNode!
+    private var previewTileNode: SKSpriteNode?
+    private var previewTileValue: Int?
 
     private var titleLabel: SKLabelNode!
+    private var subtitleLabel: SKLabelNode!
+    private var nextCardNode: SKShapeNode!
     private var nextTitleLabel: SKLabelNode!
     private var nextPreviewNode: SKNode!
+    private var scoreCardNode: SKShapeNode!
     private var scoreTitleLabel: SKLabelNode!
     private var scoreValueLabel: SKLabelNode!
+    private var bestValueLabel: SKLabelNode!
     private var historyButton: SKShapeNode!
 
     private var inputController: InputController?
@@ -28,6 +37,8 @@ final class GameScene: SKScene {
     private var scenePhase: ScenePhase = .playing
     private var historyReturnPhase: ScenePhase = .playing
     private var didRecordCurrentGame = false
+    private var mergeStreak = 0
+    private var pendingSwipe: SwipeDirection?
 
     private let scoreFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
@@ -49,9 +60,12 @@ final class GameScene: SKScene {
         if gridNode == nil {
             setupGrid()
             setupHUD()
+            layoutScene()
+            prewarmTileTextures()
             startNewGame()
+        } else {
+            layoutScene()
         }
-        layoutScene()
         installInput(on: view)
     }
 
@@ -67,7 +81,12 @@ final class GameScene: SKScene {
     // MARK: - Setup
 
     private func setupGrid() {
+        backgroundNode = SKSpriteNode()
+        backgroundNode.zPosition = -100
+        addChild(backgroundNode)
+
         gridNode = SKNode()
+        gridNode.zPosition = 10
         addChild(gridNode)
     }
 
@@ -76,32 +95,58 @@ final class GameScene: SKScene {
         titleLabel.horizontalAlignmentMode = .left
         titleLabel.verticalAlignmentMode = .top
         titleLabel.text = "三衍"
+        titleLabel.zPosition = 30
         addChild(titleLabel)
+
+        subtitleLabel = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: DesignSystem.Colors.textDark)
+        subtitleLabel.horizontalAlignmentMode = .left
+        subtitleLabel.alpha = 0.72
+        subtitleLabel.text = "1 + 2 = 3"
+        subtitleLabel.zPosition = 30
+        addChild(subtitleLabel)
+
+        nextCardNode = makeHUDCard(size: DesignSystem.Layout.nextCardSize)
+        addChild(nextCardNode)
 
         nextTitleLabel = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
         nextTitleLabel.text = "下一个"
+        nextTitleLabel.zPosition = 31
         addChild(nextTitleLabel)
 
         nextPreviewNode = SKNode()
+        nextPreviewNode.zPosition = 31
         addChild(nextPreviewNode)
+
+        scoreCardNode = makeHUDCard(size: DesignSystem.Layout.scoreCardSize)
+        addChild(scoreCardNode)
 
         scoreTitleLabel = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
         scoreTitleLabel.horizontalAlignmentMode = .right
         scoreTitleLabel.text = "分数"
+        scoreTitleLabel.zPosition = 31
         addChild(scoreTitleLabel)
 
         scoreValueLabel = makeLabel(font: DesignSystem.Fonts.hudValueFont(), color: DesignSystem.Colors.textDark)
         scoreValueLabel.horizontalAlignmentMode = .right
         scoreValueLabel.text = "0"
+        scoreValueLabel.zPosition = 31
         addChild(scoreValueLabel)
 
+        bestValueLabel = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: DesignSystem.Colors.textDark)
+        bestValueLabel.horizontalAlignmentMode = .right
+        bestValueLabel.text = "BEST 0"
+        bestValueLabel.alpha = 0.74
+        bestValueLabel.zPosition = 31
+        addChild(bestValueLabel)
+
         historyButton = makeButton(
-            size: CGSize(width: 60, height: DesignSystem.Layout.hudButtonSize.height),
+            size: CGSize(width: 72, height: DesignSystem.Layout.hudButtonSize.height),
             fillColor: DesignSystem.Colors.buttonSecondaryBackground,
             text: "记录",
             textColor: DesignSystem.Colors.textDark,
             name: NodeName.historyHudButton
         )
+        historyButton.zPosition = 30
         addChild(historyButton)
     }
 
@@ -130,28 +175,57 @@ final class GameScene: SKScene {
         let gridSize = DesignSystem.Layout.gridSize(in: view)
         let boardCenterY = frame.midY - 20
 
+        layoutBackground(size: frame.size)
         gridNode.position = CGPoint(x: frame.midX, y: boardCenterY)
 
         titleLabel.position = CGPoint(x: frame.minX + leftInset + padding, y: headerY)
+        subtitleLabel.position = CGPoint(x: titleLabel.position.x + 1, y: headerY - 32)
         historyButton.position = CGPoint(
-            x: frame.minX + leftInset + padding + DesignSystem.Layout.hudTitleWidth + 34,
-            y: headerY - 18
+            x: frame.minX + leftInset + padding + 38,
+            y: headerY - 58
         )
 
-        nextTitleLabel.position = CGPoint(x: frame.midX, y: headerY - 2)
-        nextPreviewNode.position = CGPoint(x: frame.midX, y: headerY - 38)
+        nextCardNode.position = CGPoint(x: frame.midX - 4, y: headerY - 38)
+        nextTitleLabel.position = CGPoint(x: nextCardNode.position.x, y: headerY - 16)
+        nextPreviewNode.position = CGPoint(x: nextCardNode.position.x, y: headerY - 52)
 
-        scoreTitleLabel.position = CGPoint(x: frame.maxX - rightInset - padding, y: headerY - 2)
-        scoreValueLabel.position = CGPoint(x: frame.maxX - rightInset - padding, y: headerY - 28)
+        scoreCardNode.position = CGPoint(x: frame.maxX - rightInset - padding - DesignSystem.Layout.scoreCardSize.width / 2, y: headerY - 34)
+        scoreTitleLabel.position = CGPoint(x: frame.maxX - rightInset - padding - 14, y: headerY - 12)
+        scoreValueLabel.position = CGPoint(x: frame.maxX - rightInset - padding - 14, y: headerY - 36)
+        bestValueLabel.position = CGPoint(x: frame.maxX - rightInset - padding - 14, y: headerY - 58)
 
         layoutGridBackground(gridSize: gridSize)
     }
 
+    private func layoutBackground(size: CGSize) {
+        backgroundNode.texture = backgroundTexture(size: size)
+        backgroundNode.size = size
+        backgroundNode.position = CGPoint(x: frame.midX, y: frame.midY)
+    }
+
     private func layoutGridBackground(gridSize: CGFloat) {
-        gridNode.children.filter { $0.name == NodeName.cell }.forEach { $0.removeFromParent() }
+        gridNode.children
+            .filter { $0.name == NodeName.cell || $0.name == NodeName.boardPanel }
+            .forEach { $0.removeFromParent() }
 
         let cellSize = DesignSystem.Layout.cellSize(gridSize: gridSize)
         let spacing = DesignSystem.Layout.gridSpacing
+        let panelSize = CGSize(width: gridSize + 18, height: gridSize + 18)
+        let panelShadow = SKShapeNode(rectOf: panelSize, cornerRadius: 24)
+        panelShadow.fillColor = UIColor.black.withAlphaComponent(0.1)
+        panelShadow.strokeColor = .clear
+        panelShadow.name = NodeName.boardPanel
+        panelShadow.position = CGPoint(x: 0, y: -8)
+        panelShadow.zPosition = -3
+        gridNode.addChild(panelShadow)
+
+        let panel = SKShapeNode(rectOf: panelSize, cornerRadius: 24)
+        panel.fillColor = DesignSystem.Colors.boardBackground
+        panel.strokeColor = DesignSystem.Colors.cardStroke
+        panel.lineWidth = 1
+        panel.name = NodeName.boardPanel
+        panel.zPosition = -2
+        gridNode.addChild(panel)
 
         for row in 0..<4 {
             for col in 0..<4 {
@@ -160,8 +234,11 @@ final class GameScene: SKScene {
                     cornerRadius: DesignSystem.Layout.cellCornerRadius
                 )
                 cell.fillColor = DesignSystem.Colors.emptyCell
-                cell.strokeColor = .clear
+                cell.strokeColor = UIColor.white.withAlphaComponent(0.18)
+                cell.lineWidth = 1
                 cell.name = NodeName.cell
+                cell.alpha = 0.76
+                cell.zPosition = -1
                 cell.position = pointForGridPosition(
                     GridPosition(row: row, col: col),
                     gridSize: gridSize,
@@ -181,12 +258,15 @@ final class GameScene: SKScene {
         historyReturnPhase = .playing
         didRecordCurrentGame = false
         isAnimating = false
+        mergeStreak = 0
+        pendingSwipe = nil
         achievementToastNode?.removeFromParent()
         achievementToastNode = nil
 
         model.reset()
         tileNodes.values.forEach { $0.removeFromParent() }
         tileNodes.removeAll()
+        previewTileValue = nil
         spawner.reset(for: model.board)
 
         if let pos1 = model.emptyPositions.randomElement() {
@@ -209,20 +289,28 @@ final class GameScene: SKScene {
     }
 
     private func handleSwipe(_ swipe: SwipeDirection) {
-        guard !isAnimating, scenePhase == .playing else { return }
+        guard scenePhase == .playing else { return }
+        guard !isAnimating else {
+            pendingSwipe = swipe
+            return
+        }
 
         let result = model.move(directionForSwipe(swipe))
         guard result.didMove else {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            mergeStreak = 0
             return
         }
 
         isAnimating = true
         if result.merges.isEmpty {
+            mergeStreak = 0
             audioManager.playMove()
         } else if result.merges.contains(where: { $0.resultValue >= 48 }) {
+            mergeStreak += 1
             audioManager.playBigMerge()
         } else {
+            mergeStreak += 1
             audioManager.playMerge()
         }
         animateMove(result: result)
@@ -255,7 +343,7 @@ final class GameScene: SKScene {
     }
 
     private func finishMove(result: MoveResult) {
-        rebuildTileNodes()
+        applyMoveResultToTileNodes(result)
 
         if let spawnPos = result.spawnCandidates.randomElement() {
             let spawnedTile = spawner.takePreviewTile()
@@ -266,11 +354,47 @@ final class GameScene: SKScene {
         spawner.refreshPreview(for: model.board)
 
         updateHUD()
+        showMergeFeedback(for: result)
         isAnimating = false
 
         if model.isGameOver {
             showGameOver()
+        } else if let pendingSwipe {
+            self.pendingSwipe = nil
+            run(.wait(forDuration: 0.015)) { [weak self] in
+                self?.handleSwipe(pendingSwipe)
+            }
         }
+    }
+
+    private func applyMoveResultToTileNodes(_ result: MoveResult) {
+        var updatedNodes = tileNodes
+
+        for movement in result.movements where movement.consumedInMerge {
+            if let node = updatedNodes.removeValue(forKey: movement.from) {
+                node.removeFromParent()
+            }
+        }
+
+        for movement in result.movements where !movement.consumedInMerge {
+            guard let node = updatedNodes.removeValue(forKey: movement.from) else { continue }
+            node.position = positionForGrid(movement.to)
+            updatedNodes[movement.to] = node
+        }
+
+        for merge in result.merges {
+            let node = makeTileNode(value: merge.resultValue)
+            node.position = positionForGrid(merge.at)
+            node.setScale(0.9)
+            gridNode.addChild(node)
+            updatedNodes[merge.at] = node
+
+            let pop = SKAction.scale(to: 1, duration: DesignSystem.Animation.mergeDuration)
+            pop.timingMode = .easeOut
+            node.run(pop)
+        }
+
+        tileNodes = updatedNodes
     }
 
     // MARK: - Tile Nodes
@@ -310,34 +434,160 @@ final class GameScene: SKScene {
         node.run(scaleUp)
     }
 
-    private func makeTileNode(value: Int) -> SKNode {
-        guard let view else { return SKNode() }
+    private func makeTileNode(value: Int) -> SKSpriteNode {
+        guard let view else { return SKSpriteNode() }
         let gridSize = DesignSystem.Layout.gridSize(in: view)
         let cellSize = DesignSystem.Layout.cellSize(gridSize: gridSize)
         return makeTileNode(value: value, size: cellSize)
     }
 
-    private func makeTileNode(value: Int, size: CGFloat) -> SKNode {
-        let container = SKNode()
+    private func makeTileNode(value: Int, size: CGFloat) -> SKSpriteNode {
+        let texture = tileTexture(value: value, size: size)
+        let node = SKSpriteNode(texture: texture, size: CGSize(width: size, height: size))
+        node.zPosition = 2
+        return node
+    }
 
-        let background = SKShapeNode(
-            rectOf: CGSize(width: size, height: size),
-            cornerRadius: DesignSystem.Layout.tileCornerRadius
-        )
-        background.fillColor = DesignSystem.Colors.tileBackground(for: value)
-        background.strokeColor = .clear
-        container.addChild(background)
+    private func prewarmTileTextures() {
+        guard let view else { return }
 
-        let label = SKLabelNode(text: "\(value)")
-        let tileFont = DesignSystem.Fonts.tileFont(for: value)
-        label.fontName = tileFont.fontName
-        label.fontSize = min(tileFont.pointSize, size * 0.58)
-        label.fontColor = DesignSystem.Colors.tileText(for: value)
-        label.verticalAlignmentMode = .center
-        label.horizontalAlignmentMode = .center
-        container.addChild(label)
+        let gridSize = DesignSystem.Layout.gridSize(in: view)
+        let cellSize = DesignSystem.Layout.cellSize(gridSize: gridSize)
+        let commonValues = [1, 2, 3, 6, 12, 24, 48, 96, 192, 384, 768]
+        for value in commonValues {
+            _ = tileTexture(value: value, size: cellSize)
+            _ = tileTexture(value: value, size: DesignSystem.Layout.previewTileSize.width)
+        }
+    }
 
-        return container
+    private func tileTexture(value: Int, size: CGFloat) -> SKTexture {
+        let key = TileTextureKey(value: value, size: Int(size.rounded()))
+        if let cached = tileTextureCache[key] {
+            return cached
+        }
+
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+        let image = renderer.image { context in
+            let cgContext = context.cgContext
+            let rect = CGRect(x: 0, y: 0, width: size, height: size)
+            let path = UIBezierPath(
+                roundedRect: rect,
+                cornerRadius: DesignSystem.Layout.tileCornerRadius
+            )
+            let baseColor = DesignSystem.Colors.tileBackground(for: value)
+            let highlightColor = DesignSystem.Colors.tileHighlight(for: value)
+
+            cgContext.saveGState()
+            path.addClip()
+            if let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                colors: [highlightColor.cgColor, baseColor.cgColor] as CFArray,
+                locations: [0, 1]
+            ) {
+                cgContext.drawLinearGradient(
+                    gradient,
+                    start: CGPoint(x: 0, y: 0),
+                    end: CGPoint(x: size, y: size),
+                    options: []
+                )
+            } else {
+                baseColor.setFill()
+                path.fill()
+            }
+            cgContext.restoreGState()
+
+            UIColor.black.withAlphaComponent(value <= 3 ? 0.08 : 0.14).setFill()
+            UIBezierPath(
+                roundedRect: CGRect(x: 0, y: size * 0.72, width: size, height: size * 0.28),
+                cornerRadius: DesignSystem.Layout.tileCornerRadius
+            ).fill()
+
+            UIColor.white.withAlphaComponent(value <= 3 ? 0.42 : 0.26).setFill()
+            UIBezierPath(
+                roundedRect: CGRect(x: size * 0.12, y: size * 0.1, width: size * 0.76, height: size * 0.18),
+                cornerRadius: size * 0.09
+            ).fill()
+
+            UIColor.white.withAlphaComponent(0.28).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+
+            let tileFont = DesignSystem.Fonts.tileFont(for: value)
+            let font = tileFont.withSize(min(tileFont.pointSize, size * 0.58))
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            let text = "\(value)" as NSString
+            let shadow = NSShadow()
+            shadow.shadowBlurRadius = value <= 3 ? 0 : 2
+            shadow.shadowOffset = CGSize(width: 0, height: 1)
+            shadow.shadowColor = UIColor.black.withAlphaComponent(value <= 3 ? 0 : 0.2)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: DesignSystem.Colors.tileText(for: value),
+                .paragraphStyle: paragraph,
+                .shadow: shadow
+            ]
+            let textSize = text.size(withAttributes: attributes)
+            let textRect = CGRect(
+                x: 0,
+                y: (size - textSize.height) / 2 - size * 0.025,
+                width: size,
+                height: textSize.height
+            )
+            text.draw(in: textRect, withAttributes: attributes)
+        }
+
+        let texture = SKTexture(image: image)
+        texture.filteringMode = .linear
+        tileTextureCache[key] = texture
+        return texture
+    }
+
+    private func backgroundTexture(size: CGSize) -> SKTexture {
+        let key = BackgroundTextureKey(width: Int(size.width.rounded()), height: Int(size.height.rounded()))
+        if let cached = backgroundTextureCache[key] {
+            return cached
+        }
+
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            let cgContext = context.cgContext
+            let colors = [
+                DesignSystem.Colors.backgroundGlow.cgColor,
+                DesignSystem.Colors.background.cgColor,
+                DesignSystem.Colors.backgroundDeep.cgColor
+            ] as CFArray
+            let locations: [CGFloat] = [0, 0.56, 1]
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: locations) {
+                cgContext.drawLinearGradient(
+                    gradient,
+                    start: CGPoint(x: 0, y: 0),
+                    end: CGPoint(x: size.width, y: size.height),
+                    options: []
+                )
+            }
+
+            UIColor.white.withAlphaComponent(0.28).setFill()
+            cgContext.fillEllipse(in: CGRect(x: -size.width * 0.22, y: -size.height * 0.12, width: size.width * 0.72, height: size.width * 0.72))
+
+            DesignSystem.Colors.progressFill.withAlphaComponent(0.09).setFill()
+            cgContext.fillEllipse(in: CGRect(x: size.width * 0.62, y: size.height * 0.08, width: size.width * 0.52, height: size.width * 0.52))
+
+            UIColor.white.withAlphaComponent(0.16).setStroke()
+            cgContext.setLineWidth(1)
+            let step: CGFloat = 34
+            var x: CGFloat = -size.height
+            while x < size.width {
+                cgContext.move(to: CGPoint(x: x, y: 0))
+                cgContext.addLine(to: CGPoint(x: x + size.height, y: size.height))
+                x += step
+            }
+            cgContext.strokePath()
+        }
+
+        let texture = SKTexture(image: image)
+        backgroundTextureCache[key] = texture
+        return texture
     }
 
     private func rebuildTileNodes() {
@@ -361,20 +611,91 @@ final class GameScene: SKScene {
 
     private func updateHUD() {
         scoreValueLabel.text = formatScore(model.score)
+        bestValueLabel.text = "BEST \(formatScore(max(model.score, statsStore.bestScore())))"
         updatePreviewTile(animated: true)
+    }
+
+    private func showMergeFeedback(for result: MoveResult) {
+        guard !result.merges.isEmpty else { return }
+
+        let gained = result.merges.reduce(0) { $0 + $1.resultValue }
+        let label = makeLabel(font: DesignSystem.Fonts.hudValueFont(), color: DesignSystem.Colors.progressFill)
+        label.zPosition = 60
+        label.text = mergeStreak >= 2 ? "+\(gained)  x\(mergeStreak)" : "+\(gained)"
+
+        if let largestMerge = result.merges.max(by: { $0.resultValue < $1.resultValue }) {
+            label.position = gridNode.convert(positionForGrid(largestMerge.at), to: self)
+            if largestMerge.resultValue >= 48 {
+                playMilestoneEffect(at: label.position, value: largestMerge.resultValue)
+            }
+        } else {
+            label.position = CGPoint(x: frame.midX, y: frame.midY)
+        }
+
+        addChild(label)
+
+        let lift = SKAction.moveBy(x: 0, y: 34, duration: 0.38)
+        lift.timingMode = .easeOut
+        let fade = SKAction.fadeOut(withDuration: 0.34)
+        label.run(.sequence([.group([lift, fade]), .removeFromParent()]))
+
+        if mergeStreak >= 3 {
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        } else {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
+    }
+
+    private func playMilestoneEffect(at position: CGPoint, value: Int) {
+        let scaleUp = SKAction.scale(to: 1.025, duration: 0.055)
+        let scaleBack = SKAction.scale(to: 1, duration: 0.075)
+        gridNode.run(.sequence([scaleUp, scaleBack]), withKey: "milestonePulse")
+
+        let color = DesignSystem.Colors.tileBackground(for: value)
+        for index in 0..<8 {
+            let spark = SKShapeNode(circleOfRadius: 3.2)
+            spark.fillColor = color
+            spark.strokeColor = .clear
+            spark.zPosition = 58
+            spark.position = position
+            addChild(spark)
+
+            let angle = CGFloat(index) / 8 * .pi * 2
+            let distance: CGFloat = 42
+            let move = SKAction.moveBy(
+                x: cos(angle) * distance,
+                y: sin(angle) * distance,
+                duration: 0.28
+            )
+            move.timingMode = .easeOut
+            spark.run(.sequence([.group([move, .fadeOut(withDuration: 0.28)]), .removeFromParent()]))
+        }
     }
 
     private func updatePreviewTile(animated: Bool) {
         guard nextPreviewNode != nil else { return }
 
-        nextPreviewNode.removeAllChildren()
+        let value = spawner.previewTile.value
+        if previewTileValue == value, let tile = previewTileNode {
+            guard animated else { return }
+
+            tile.removeAction(forKey: "previewPop")
+            tile.setScale(0.86)
+            let pop = SKAction.scale(to: 1, duration: DesignSystem.Animation.previewDuration)
+            pop.timingMode = .easeOut
+            tile.run(pop, withKey: "previewPop")
+            return
+        }
 
         let tile = makeTileNode(
-            value: spawner.previewTile.value,
+            value: value,
             size: DesignSystem.Layout.previewTileSize.width
         )
         tile.setScale(animated ? 0.72 : 1)
+        nextPreviewNode.removeAllChildren()
         nextPreviewNode.addChild(tile)
+        previewTileNode = tile
+        previewTileValue = value
 
         guard animated else { return }
 
@@ -665,6 +986,14 @@ final class GameScene: SKScene {
         button.strokeColor = .clear
         button.name = name
 
+        let shadow = SKShapeNode(rectOf: size, cornerRadius: size.height / 2)
+        shadow.fillColor = UIColor.black.withAlphaComponent(0.08)
+        shadow.strokeColor = .clear
+        shadow.position = CGPoint(x: 0, y: -3)
+        shadow.zPosition = -1
+        shadow.name = name
+        button.addChild(shadow)
+
         let label = makeLabel(font: DesignSystem.Fonts.buttonFont(), color: textColor)
         label.text = text
         label.name = name
@@ -672,6 +1001,23 @@ final class GameScene: SKScene {
         button.addChild(label)
 
         return button
+    }
+
+    private func makeHUDCard(size: CGSize) -> SKShapeNode {
+        let card = SKShapeNode(rectOf: size, cornerRadius: 20)
+        card.fillColor = DesignSystem.Colors.cardBackground.withAlphaComponent(0.82)
+        card.strokeColor = DesignSystem.Colors.cardStroke
+        card.lineWidth = 1
+        card.zPosition = 29
+
+        let shadow = SKShapeNode(rectOf: size, cornerRadius: 20)
+        shadow.fillColor = UIColor.black.withAlphaComponent(0.08)
+        shadow.strokeColor = .clear
+        shadow.position = CGPoint(x: 0, y: -5)
+        shadow.zPosition = -1
+        card.addChild(shadow)
+
+        return card
     }
 
     private func showAchievementToasts(_ unlocks: [AchievementUnlock]) {
@@ -729,8 +1075,19 @@ private enum ScenePhase {
     case history
 }
 
+private struct TileTextureKey: Hashable {
+    let value: Int
+    let size: Int
+}
+
+private struct BackgroundTextureKey: Hashable {
+    let width: Int
+    let height: Int
+}
+
 private enum NodeName {
     static let cell = "cell"
+    static let boardPanel = "boardPanel"
     static let scrim = "scrim"
     static let historyHudButton = "historyHudButton"
     static let gameOverHistoryButton = "gameOverHistoryButton"

@@ -32,3 +32,6 @@ fastlane/test_output/
 # Tooling/cache
 .swiftpm/
 .cursor/
+
+# Python
+__pycache__/
