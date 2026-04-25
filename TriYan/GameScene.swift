@@ -35,11 +35,11 @@ final class GameScene: SKScene {
     private var overlayPages: [ScenePhase: SKNode] = [:]
     private var pageStack: [ScenePhase] = []
     private var achievementToastNode: SKNode?
+    private var currentMenuOverlayPage: MenuOverlayPage = .settings
 
     private var isAnimating = false
     private var scenePhase: ScenePhase = .playing
     private var didRecordCurrentGame = false
-    private var overlayBackground: SKSpriteNode?
     private var mergeStreak = 0
     private var pendingSwipe: SwipeDirection?
 
@@ -298,6 +298,18 @@ final class GameScene: SKScene {
     }
 
     private func handleSwipe(_ swipe: SwipeDirection) {
+        if scenePhase == .menu {
+            switch swipe {
+            case .left:
+                showNextMenuOverlayPage()
+            case .right:
+                showPreviousMenuOverlayPage()
+            case .up, .down:
+                break
+            }
+            return
+        }
+
         guard scenePhase == .playing else { return }
         guard !isAnimating else {
             pendingSwipe = swipe
@@ -836,7 +848,6 @@ final class GameScene: SKScene {
         if overlayRoot == nil {
             overlayRoot = SKNode()
             overlayRoot?.zPosition = 100
-            overlayRoot?.isUserInteractionEnabled = true
             addChild(overlayRoot!)
         }
 
@@ -844,18 +855,12 @@ final class GameScene: SKScene {
 
         // Determine animation direction
         let isVertical = phase == .menu
-        let offset: CGFloat = frame.height
-        let startX: CGFloat = isVertical ? 0 : (phase == .history ? -offset : offset)
+        let verticalOffset: CGFloat = frame.height
+        let horizontalOffset: CGFloat = frame.width
+        let startX: CGFloat = isVertical ? 0 : (phase == .history ? -horizontalOffset : horizontalOffset)
         let endX: CGFloat = 0
 
-        // Page background - full screen, no card, no scrim
-        let bg = SKSpriteNode(color: DesignSystem.Colors.overlayScrim, size: frame.size)
-        bg.position = CGPoint(x: frame.midX, y: frame.midY)
-        bg.name = NodeName.pageBackground
-        page.addChild(bg)
-        self.overlayBackground = bg
-
-        page.position = CGPoint(x: startX, y: isVertical ? -offset : 0)
+        page.position = CGPoint(x: startX, y: isVertical ? -verticalOffset : 0)
         page.zPosition = root.zPosition + 10
         root.addChild(page)
 
@@ -895,13 +900,14 @@ final class GameScene: SKScene {
               let currentPage = overlayPages[currentPhase] else { return }
 
         let isVertical = currentPhase == .menu
-        let offset: CGFloat = 320
-        let endX: CGFloat = isVertical ? -offset : (currentPhase == .history ? offset : -offset)
+        let verticalOffset: CGFloat = frame.height
+        let horizontalOffset: CGFloat = frame.width
+        let endX: CGFloat = isVertical ? -horizontalOffset : (currentPhase == .history ? horizontalOffset : -horizontalOffset)
 
         let duration: TimeInterval = animated ? 0.24 : 0.01
         let slide: SKAction
         if isVertical {
-            slide = SKAction.move(to: CGPoint(x: 0, y: -offset), duration: duration)
+            slide = SKAction.move(to: CGPoint(x: 0, y: -verticalOffset), duration: duration)
         } else {
             slide = SKAction.move(to: CGPoint(x: endX, y: 0), duration: duration)
         }
@@ -926,20 +932,38 @@ final class GameScene: SKScene {
         overlayRoot = nil
         overlayPages.removeAll()
         pageStack.removeAll()
-        overlayBackground = nil
+        currentMenuOverlayPage = .settings
         scenePhase = .playing
         isAnimating = false
     }
 
     private func rebuildOverlayPage(for phase: ScenePhase) {
-        overlayPages[phase] = nil
-        overlayPages[phase] = buildOverlayPage(for: phase)
+        let oldPage = overlayPages[phase]
+        let rebuiltPage = buildOverlayPage(for: phase)
+        overlayPages[phase] = rebuiltPage
+
+        guard pageStack.last == phase else { return }
+        guard let root = overlayRoot else { return }
+
+        rebuiltPage.position = oldPage?.position ?? .zero
+        rebuiltPage.zPosition = oldPage?.zPosition ?? root.zPosition + 10
+        root.addChild(rebuiltPage)
+        oldPage?.removeFromParent()
     }
 
     // MARK: - Overlay Page Builders
 
     private func buildOverlayPage(for phase: ScenePhase) -> SKNode {
         let page = SKNode()
+        let backgroundColor = phase == .menu
+            ? DesignSystem.Colors.background
+            : DesignSystem.Colors.overlayScrim
+        let pageBackground = SKSpriteNode(color: backgroundColor, size: frame.size)
+        pageBackground.position = CGPoint(x: frame.midX, y: frame.midY)
+        pageBackground.name = NodeName.pageBackground
+        pageBackground.zPosition = -1
+        page.addChild(pageBackground)
+
         switch phase {
         case .gameOver:
             buildGameOverPage(into: page)
@@ -1062,31 +1086,113 @@ final class GameScene: SKScene {
     private func buildMenuPage(into page: SKNode) {
         let cx = frame.midX
         let cy = frame.midY
+        let topInset = max(view?.safeAreaInsets.top ?? 44, 44)
+        let bottomInset = max(view?.safeAreaInsets.bottom ?? 24, 24)
+        let headerY = frame.maxY - topInset - 44
+        let contentCenter = CGPoint(x: cx, y: cy + 10)
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
-        title.text = "菜单"
-        title.position = CGPoint(x: cx, y: cy + 110)
+        title.text = currentMenuOverlayPage.title
+        title.position = CGPoint(x: cx, y: headerY)
         page.addChild(title)
 
-        let historyButton = makeButton(
-            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
-            text: "历史记录",
-            textColor: DesignSystem.Colors.textDark,
-            name: NodeName.menuHistoryButton
-        )
-        historyButton.position = CGPoint(x: cx, y: cy + 30)
-        page.addChild(historyButton)
+        let leftHint = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: DesignSystem.Colors.textDark)
+        leftHint.text = currentMenuOverlayPage == .history ? "" : "‹ \(previousMenuOverlayTitle())"
+        leftHint.alpha = 0.5
+        leftHint.horizontalAlignmentMode = .left
+        leftHint.position = CGPoint(x: frame.minX + 28, y: headerY - 38)
+        page.addChild(leftHint)
 
-        let settingsButton = makeButton(
-            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
-            text: "设置",
-            textColor: DesignSystem.Colors.textDark,
-            name: NodeName.menuSettingsButton
+        let rightHint = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: DesignSystem.Colors.textDark)
+        rightHint.text = currentMenuOverlayPage == .about ? "" : "\(nextMenuOverlayTitle()) ›"
+        rightHint.alpha = 0.5
+        rightHint.horizontalAlignmentMode = .right
+        rightHint.position = CGPoint(x: frame.maxX - 28, y: headerY - 38)
+        page.addChild(rightHint)
+
+        let hint = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: DesignSystem.Colors.textDark)
+        hint.text = "左右滑动切换"
+        hint.alpha = 0.58
+        hint.position = CGPoint(x: cx, y: headerY - 38)
+        page.addChild(hint)
+
+        buildMenuOverlayContent(into: page, center: contentCenter)
+        buildMenuOverlayFooter(into: page, center: CGPoint(x: cx, y: frame.minY + bottomInset + 94))
+    }
+
+    private func buildMenuOverlayContent(into page: SKNode, center: CGPoint) {
+        switch currentMenuOverlayPage {
+        case .history:
+            buildHistoryContent(into: page, center: center)
+        case .settings:
+            buildSettingsContent(into: page, center: center)
+        case .about:
+            buildAboutPrivacyContent(into: page, center: center)
+        }
+    }
+
+    private func buildSettingsContent(into page: SKNode, center: CGPoint) {
+        let soundRow = makeSettingsRow(
+            title: "音效",
+            detail: audioManager.muted ? "已关闭" : "已开启",
+            name: NodeName.soundToggleButton,
+            emphasized: !audioManager.muted
         )
-        settingsButton.position = CGPoint(x: cx, y: cy - 30)
-        page.addChild(settingsButton)
+        soundRow.position = CGPoint(x: center.x, y: center.y + 44)
+        page.addChild(soundRow)
+
+        let privacyRow = makeSettingsRow(
+            title: "隐私说明",
+            detail: "本地数据与 Game Center",
+            name: NodeName.privacyButton
+        )
+        privacyRow.position = CGPoint(x: center.x, y: center.y - 12)
+        page.addChild(privacyRow)
+    }
+
+    private func buildHistoryContent(into page: SKNode, center: CGPoint) {
+        let snapshot = statsStore.snapshot()
+        let summary = makeStatsSummary(snapshot: snapshot)
+        summary.position = CGPoint(x: center.x, y: center.y + 52)
+        page.addChild(summary)
+
+        if snapshot.recentGames.isEmpty {
+            let emptyLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
+            emptyLabel.text = "还没有历史记录"
+            emptyLabel.position = CGPoint(x: center.x, y: center.y - 28)
+            page.addChild(emptyLabel)
+        } else {
+            for (index, game) in snapshot.recentGames.prefix(3).enumerated() {
+                let row = makeHistoryRow(game: game, rank: index + 1)
+                row.position = CGPoint(x: center.x, y: center.y + 4 - CGFloat(index) * 39)
+                page.addChild(row)
+            }
+        }
+    }
+
+    private func buildAboutPrivacyContent(into page: SKNode, center: CGPoint) {
+        let lines = [
+            "三衍是一款轻量数字合成游戏。",
+            "1 和 2 合成 3，之后相同数字继续合成。",
+            "游戏记录、最高分和音效设置保存在本机。",
+            "Game Center 只提交排行榜分数和成就进度。"
+        ]
+
+        for (index, line) in lines.enumerated() {
+            let label = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
+            label.horizontalAlignmentMode = .left
+            label.text = line
+            label.position = CGPoint(x: center.x - 132, y: center.y + 54 - CGFloat(index) * 34)
+            page.addChild(label)
+        }
+    }
+
+    private func buildMenuOverlayFooter(into page: SKNode, center: CGPoint) {
+        let dots = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: DesignSystem.Colors.textDark)
+        dots.alpha = 0.48
+        dots.text = MenuOverlayPage.allCases.map { $0 == currentMenuOverlayPage ? "●" : "○" }.joined(separator: "  ")
+        dots.position = CGPoint(x: center.x, y: center.y + 44)
+        page.addChild(dots)
 
         let closeButton = makeButton(
             size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
@@ -1095,8 +1201,34 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeMenuButton
         )
-        closeButton.position = CGPoint(x: cx, y: cy - 96)
+        closeButton.position = CGPoint(x: center.x, y: center.y)
         page.addChild(closeButton)
+    }
+
+    private func showNextMenuOverlayPage() {
+        guard let index = MenuOverlayPage.allCases.firstIndex(of: currentMenuOverlayPage),
+              index < MenuOverlayPage.allCases.index(before: MenuOverlayPage.allCases.endIndex) else { return }
+        currentMenuOverlayPage = MenuOverlayPage.allCases[MenuOverlayPage.allCases.index(after: index)]
+        rebuildOverlayPage(for: .menu)
+    }
+
+    private func showPreviousMenuOverlayPage() {
+        guard let index = MenuOverlayPage.allCases.firstIndex(of: currentMenuOverlayPage),
+              index > MenuOverlayPage.allCases.startIndex else { return }
+        currentMenuOverlayPage = MenuOverlayPage.allCases[MenuOverlayPage.allCases.index(before: index)]
+        rebuildOverlayPage(for: .menu)
+    }
+
+    private func previousMenuOverlayTitle() -> String {
+        guard let index = MenuOverlayPage.allCases.firstIndex(of: currentMenuOverlayPage),
+              index > MenuOverlayPage.allCases.startIndex else { return "" }
+        return MenuOverlayPage.allCases[MenuOverlayPage.allCases.index(before: index)].title
+    }
+
+    private func nextMenuOverlayTitle() -> String {
+        guard let index = MenuOverlayPage.allCases.firstIndex(of: currentMenuOverlayPage),
+              index < MenuOverlayPage.allCases.index(before: MenuOverlayPage.allCases.endIndex) else { return "" }
+        return MenuOverlayPage.allCases[MenuOverlayPage.allCases.index(after: index)].title
     }
 
     private func buildSettingsPage(into page: SKNode) {
@@ -1202,6 +1334,7 @@ final class GameScene: SKScene {
             switch candidate.name {
             case NodeName.menuHudButton:
                 audioManager.playButton()
+                currentMenuOverlayPage = .settings
                 pushOverlay(phase: .menu)
                 return
             case NodeName.gameOverHistoryButton:
@@ -1230,7 +1363,7 @@ final class GameScene: SKScene {
                 return
             case NodeName.soundToggleButton:
                 audioManager.toggleMute()
-                rebuildOverlayPage(for: .settings)
+                rebuildOverlayPage(for: scenePhase)
                 return
             case NodeName.aboutButton:
                 audioManager.playButton()
@@ -1238,7 +1371,12 @@ final class GameScene: SKScene {
                 return
             case NodeName.privacyButton:
                 audioManager.playButton()
-                pushOverlay(phase: .privacy)
+                if scenePhase == .menu {
+                    currentMenuOverlayPage = .about
+                    rebuildOverlayPage(for: .menu)
+                } else {
+                    pushOverlay(phase: .privacy)
+                }
                 return
             case NodeName.backToSettingsButton:
                 audioManager.playButton()
@@ -1405,6 +1543,20 @@ private enum ScenePhase {
     case settings
     case about
     case privacy
+}
+
+private enum MenuOverlayPage: Int, CaseIterable {
+    case history
+    case settings
+    case about
+
+    var title: String {
+        switch self {
+        case .history: return "历史记录"
+        case .settings: return "设置"
+        case .about: return "关于/隐私"
+        }
+    }
 }
 
 private struct TileTextureKey: Hashable {
