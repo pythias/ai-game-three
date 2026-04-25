@@ -7,9 +7,11 @@ final class AudioManager {
 
     private var bgMusicPlayer: AVAudioPlayer?
     private var soundIDs: [String: SystemSoundID] = [:]
-    private var isMuted = false
+    private var isMuted: Bool
+    private let mutedKey = "settings.audioMuted"
 
     private init() {
+        isMuted = UserDefaults.standard.bool(forKey: mutedKey)
         try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
         preloadSoundEffects()
     }
@@ -83,6 +85,7 @@ final class AudioManager {
 
     func toggleMute() {
         isMuted.toggle()
+        UserDefaults.standard.set(isMuted, forKey: mutedKey)
         if isMuted {
             bgMusicPlayer?.volume = 0
         } else {
