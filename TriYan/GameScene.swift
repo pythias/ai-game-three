@@ -31,12 +31,13 @@ final class GameScene: SKScene {
     private var menuButton: SKShapeNode!
 
     private var inputController: InputController?
-    private var overlayNode: SKNode?
+    private var overlayRoot: SKNode?
+    private var overlayPages: [ScenePhase: SKNode] = [:]
+    private var pageStack: [ScenePhase] = []
     private var achievementToastNode: SKNode?
 
     private var isAnimating = false
     private var scenePhase: ScenePhase = .playing
-    private var historyReturnPhase: ScenePhase = .playing
     private var didRecordCurrentGame = false
     private var mergeStreak = 0
     private var pendingSwipe: SwipeDirection?
@@ -76,7 +77,6 @@ final class GameScene: SKScene {
         layoutScene()
         rebuildTileNodes()
         updatePreviewTile(animated: false)
-        rebuildOverlayForCurrentPhase()
     }
 
     // MARK: - Setup
@@ -262,9 +262,8 @@ final class GameScene: SKScene {
     // MARK: - Game Flow
 
     private func startNewGame() {
-        hideOverlay()
+        closeAllOverlays()
         scenePhase = .playing
-        historyReturnPhase = .playing
         didRecordCurrentGame = false
         isAnimating = false
         mergeStreak = 0
@@ -713,12 +712,6 @@ final class GameScene: SKScene {
         tile.run(pop)
     }
 
-    private func formatScore(_ score: Int) -> String {
-        scoreFormatter.string(from: NSNumber(value: score)) ?? "\(score)"
-    }
-
-    // MARK: - Overlays
-
     private func showGameOver() {
         let wasGameOver = scenePhase == .gameOver
         let achievementUnlocks = recordCurrentGameIfNeeded()
@@ -726,163 +719,34 @@ final class GameScene: SKScene {
             audioManager.playGameOver()
         }
         scenePhase = .gameOver
-        hideOverlay()
-
-        let overlay = makeOverlayRoot()
-        let card = makeCard(size: DesignSystem.Layout.modalCardSize)
-        overlay.addChild(card)
-
-        let snapshot = statsStore.snapshot()
-
-        let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
-        title.text = "游戏结束"
-        title.position = CGPoint(x: 0, y: 90)
-        card.addChild(title)
-
-        let scoreTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
-        scoreTitle.text = "本局分数"
-        scoreTitle.position = CGPoint(x: -70, y: 34)
-        card.addChild(scoreTitle)
-
-        let scoreValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
-        scoreValue.text = formatScore(model.score)
-        scoreValue.position = CGPoint(x: 72, y: 32)
-        card.addChild(scoreValue)
-
-        let bestTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
-        bestTitle.text = "历史最高"
-        bestTitle.position = CGPoint(x: -70, y: -8)
-        card.addChild(bestTitle)
-
-        let bestValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
-        bestValue.text = formatScore(snapshot.bestScore)
-        bestValue.position = CGPoint(x: 72, y: -10)
-        card.addChild(bestValue)
-
-        let historyButton = makeButton(
-            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
-            text: "历史记录",
-            textColor: DesignSystem.Colors.textDark,
-            name: NodeName.gameOverHistoryButton
-        )
-        historyButton.position = CGPoint(x: -70, y: -86)
-        card.addChild(historyButton)
-
-        let restartButton = makeButton(
-            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonBackground,
-            text: "再来一局",
-            textColor: .white,
-            name: NodeName.restartButton
-        )
-        restartButton.position = CGPoint(x: 70, y: -86)
-        card.addChild(restartButton)
-
-        overlayNode = overlay
-        addChild(overlay)
+        pushOverlay(phase: .gameOver, animated: true)
         showAchievementToasts(achievementUnlocks)
     }
 
-    private func showHistory(from phase: ScenePhase) {
-        historyReturnPhase = phase
-        scenePhase = .history
-        hideOverlay()
-
-        let overlay = makeOverlayRoot()
-        let card = makeCard(size: DesignSystem.Layout.historyCardSize)
-        overlay.addChild(card)
-
-        let snapshot = statsStore.snapshot()
-
-        let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
-        title.text = "历史记录"
-        title.position = CGPoint(x: 0, y: 152)
-        card.addChild(title)
-
-        let summary = makeStatsSummary(snapshot: snapshot)
-        summary.position = CGPoint(x: 0, y: 104)
-        card.addChild(summary)
-
-        let listTitle = makeLabel(font: DesignSystem.Fonts.historyRowTitleFont(), color: DesignSystem.Colors.textDark)
-        listTitle.horizontalAlignmentMode = .left
-        listTitle.text = "最近对局"
-        listTitle.position = CGPoint(x: -136, y: 54)
-        card.addChild(listTitle)
-
-        if snapshot.recentGames.isEmpty {
-            let emptyLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
-            emptyLabel.text = "还没有历史记录"
-            emptyLabel.position = CGPoint(x: 0, y: -20)
-            card.addChild(emptyLabel)
-        } else {
-            for (index, game) in snapshot.recentGames.prefix(6).enumerated() {
-                let row = makeHistoryRow(game: game, rank: index + 1)
-                row.position = CGPoint(x: 0, y: 20 - CGFloat(index) * 39)
-                card.addChild(row)
-            }
-        }
-
-        let closeButton = makeButton(
-            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonBackground,
-            text: "关闭",
-            textColor: .white,
-            name: NodeName.closeHistoryButton
-        )
-        closeButton.position = CGPoint(x: 0, y: -148)
-        card.addChild(closeButton)
-
-        overlayNode = overlay
-        addChild(overlay)
+    private func formatScore(_ score: Int) -> String {
+        scoreFormatter.string(from: NSNumber(value: score)) ?? "\(score)"
     }
 
-    private func showMenu(from phase: ScenePhase) {
-        historyReturnPhase = phase
-        scenePhase = .menu
-        hideOverlay()
+    private func recordCurrentGameIfNeeded() -> [AchievementUnlock] {
+        guard !didRecordCurrentGame else { return [] }
 
-        let overlay = makeOverlayRoot()
-        let card = makeCard(size: DesignSystem.Layout.menuCardSize)
-        overlay.addChild(card)
-
-        let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
-        title.text = "菜单"
-        title.position = CGPoint(x: 0, y: 98)
-        card.addChild(title)
-
-        let historyButton = makeButton(
-            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
-            text: "历史记录",
-            textColor: DesignSystem.Colors.textDark,
-            name: NodeName.menuHistoryButton
+        let previousBest = statsStore.bestScore()
+        statsStore.recordGame(
+            resultScore: model.score,
+            histogram: model.tileHistogramFromThree()
         )
-        historyButton.position = CGPoint(x: 0, y: 34)
-        card.addChild(historyButton)
+        let snapshot = statsStore.snapshot()
 
-        let settingsButton = makeButton(
-            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
-            text: "设置",
-            textColor: DesignSystem.Colors.textDark,
-            name: NodeName.menuSettingsButton
+        if model.score >= previousBest {
+            gameCenterService.submit(score: model.score)
+        }
+
+        didRecordCurrentGame = true
+        return gameCenterService.reportAchievements(
+            score: model.score,
+            maxTile: model.maxTileValue,
+            gamesPlayed: snapshot.gamesPlayed
         )
-        settingsButton.position = CGPoint(x: 0, y: -26)
-        card.addChild(settingsButton)
-
-        let closeButton = makeButton(
-            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonBackground,
-            text: "继续游戏",
-            textColor: .white,
-            name: NodeName.closeMenuButton
-        )
-        closeButton.position = CGPoint(x: 0, y: -92)
-        card.addChild(closeButton)
-
-        overlayNode = overlay
-        addChild(overlay)
     }
 
     private func makeStatsSummary(snapshot: StatsSnapshot) -> SKNode {
@@ -954,63 +818,313 @@ final class GameScene: SKScene {
         return row
     }
 
-    private func recordCurrentGameIfNeeded() -> [AchievementUnlock] {
-        guard !didRecordCurrentGame else { return [] }
+    // MARK: - Overlay Navigation
 
-        let previousBest = statsStore.bestScore()
-        statsStore.recordGame(
-            resultScore: model.score,
-            histogram: model.tileHistogramFromThree()
-        )
+    /// Vertical push for menu pages, horizontal for inner content pages
+    private func pushOverlay(phase: ScenePhase, animated: Bool = true) {
+        // Build page if not cached
+        let page: SKNode
+        if let existing = overlayPages[phase] {
+            page = existing
+        } else {
+            page = buildOverlayPage(for: phase)
+            overlayPages[phase] = page
+        }
+
+        // Ensure root exists
+        if overlayRoot == nil {
+            overlayRoot = SKNode()
+            overlayRoot?.zPosition = 100
+            let scrim = SKSpriteNode(color: DesignSystem.Colors.overlayScrim, size: frame.size)
+            scrim.position = CGPoint(x: frame.midX, y: frame.midY)
+            scrim.name = NodeName.scrim
+            overlayRoot?.addChild(scrim)
+            addChild(overlayRoot!)
+        }
+
+        guard let root = overlayRoot else { return }
+
+        // Determine animation direction
+        let isVertical = phase == .menu
+        let offset: CGFloat = 320
+        let startX: CGFloat = isVertical ? 0 : (phase == .history ? -offset : offset)
+        let endX: CGFloat = 0
+
+        page.position = CGPoint(x: startX, y: isVertical ? -offset : 0)
+        page.zPosition = root.zPosition + 10
+        root.addChild(page)
+
+        let duration: TimeInterval = animated ? 0.28 : 0.01
+        let slide: SKAction
+        if isVertical {
+            slide = SKAction.move(to: CGPoint(x: 0, y: 0), duration: duration)
+        } else {
+            slide = SKAction.move(to: CGPoint(x: endX, y: 0), duration: duration)
+        }
+        slide.timingMode = .easeOut
+
+        if animated {
+            isAnimating = true
+            page.run(SKAction.sequence([
+                slide,
+                SKAction.run { [weak self] in self?.isAnimating = false }
+            ]))
+        } else {
+            page.position = CGPoint(x: endX, y: 0)
+        }
+
+        pageStack.append(phase)
+        scenePhase = phase
+    }
+
+    private func popOverlay(animated: Bool = true) {
+        guard pageStack.count >= 2 else {
+            closeAllOverlays()
+            return
+        }
+
+        let currentPhase = pageStack.removeLast()
+        let previousPhase = pageStack[pageStack.count - 1]
+
+        guard overlayRoot != nil,
+              let currentPage = overlayPages[currentPhase] else { return }
+
+        let isVertical = currentPhase == .menu
+        let offset: CGFloat = 320
+        let endX: CGFloat = isVertical ? -offset : (currentPhase == .history ? offset : -offset)
+
+        let duration: TimeInterval = animated ? 0.24 : 0.01
+        let slide: SKAction
+        if isVertical {
+            slide = SKAction.move(to: CGPoint(x: 0, y: -offset), duration: duration)
+        } else {
+            slide = SKAction.move(to: CGPoint(x: endX, y: 0), duration: duration)
+        }
+        slide.timingMode = .easeIn
+
+        if animated {
+            isAnimating = true
+            let fade = SKAction.run {
+                currentPage.removeFromParent()
+                self.isAnimating = false
+                self.scenePhase = previousPhase
+            }
+            currentPage.run(SKAction.sequence([slide, fade]))
+        } else {
+            currentPage.removeFromParent()
+            scenePhase = previousPhase
+        }
+    }
+
+    private func closeAllOverlays() {
+        overlayRoot?.removeFromParent()
+        overlayRoot = nil
+        overlayPages.removeAll()
+        pageStack.removeAll()
+        scenePhase = .playing
+        isAnimating = false
+    }
+
+    private func rebuildOverlayPage(for phase: ScenePhase) {
+        overlayPages[phase] = nil
+        overlayPages[phase] = buildOverlayPage(for: phase)
+    }
+
+    // MARK: - Overlay Page Builders
+
+    private func buildOverlayPage(for phase: ScenePhase) -> SKNode {
+        let page = SKNode()
+        switch phase {
+        case .gameOver:
+            buildGameOverPage(into: page)
+        case .history:
+            buildHistoryPage(into: page)
+        case .menu:
+            buildMenuPage(into: page)
+        case .settings:
+            buildSettingsPage(into: page)
+        case .about:
+            buildAboutPage(into: page)
+        case .privacy:
+            buildPrivacyPage(into: page)
+        default:
+            break
+        }
+        return page
+    }
+
+    private func cardOrigin(for phase: ScenePhase) -> CGPoint {
+        let size: CGSize
+        switch phase {
+        case .gameOver:   size = DesignSystem.Layout.modalCardSize
+        case .history:   size = DesignSystem.Layout.historyCardSize
+        case .menu:      size = DesignSystem.Layout.menuCardSize
+        case .settings:  size = DesignSystem.Layout.settingsCardSize
+        case .about, .privacy: size = DesignSystem.Layout.infoCardSize
+        default:          size = DesignSystem.Layout.modalCardSize
+        }
+        return CGPoint(x: frame.midX, y: frame.midY - size.height / 2)
+    }
+
+    private func makeCardNode(size: CGSize) -> SKShapeNode {
+        let card = SKShapeNode(rectOf: size, cornerRadius: DesignSystem.Layout.modalCornerRadius)
+        card.fillColor = DesignSystem.Colors.cardBackground
+        card.strokeColor = UIColor.white.withAlphaComponent(0.6)
+        card.lineWidth = 1
+        return card
+    }
+
+    // MARK: - Page Content Builders
+
+    private func buildGameOverPage(into page: SKNode) {
+        let card = makeCardNode(size: DesignSystem.Layout.modalCardSize)
+        card.position = cardOrigin(for: .gameOver)
+        page.addChild(card)
+
         let snapshot = statsStore.snapshot()
 
-        if model.score >= previousBest {
-            gameCenterService.submit(score: model.score)
-        }
+        let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
+        title.text = "游戏结束"
+        title.position = CGPoint(x: card.position.x, y: card.position.y + 90)
+        page.addChild(title)
 
-        didRecordCurrentGame = true
-        return gameCenterService.reportAchievements(
-            score: model.score,
-            maxTile: model.maxTileValue,
-            gamesPlayed: snapshot.gamesPlayed
+        let scoreTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
+        scoreTitle.text = "本局分数"
+        scoreTitle.position = CGPoint(x: card.position.x - 70, y: card.position.y + 34)
+        page.addChild(scoreTitle)
+
+        let scoreValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
+        scoreValue.text = formatScore(model.score)
+        scoreValue.position = CGPoint(x: card.position.x + 72, y: card.position.y + 32)
+        page.addChild(scoreValue)
+
+        let bestTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
+        bestTitle.text = "历史最高"
+        bestTitle.position = CGPoint(x: card.position.x - 70, y: card.position.y - 8)
+        page.addChild(bestTitle)
+
+        let bestValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
+        bestValue.text = formatScore(snapshot.bestScore)
+        bestValue.position = CGPoint(x: card.position.x + 72, y: card.position.y - 10)
+        page.addChild(bestValue)
+
+        let historyButton = makeButton(
+            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
+            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
+            text: "历史记录",
+            textColor: DesignSystem.Colors.textDark,
+            name: NodeName.gameOverHistoryButton
         )
+        historyButton.position = CGPoint(x: card.position.x - 70, y: card.position.y - 86)
+        page.addChild(historyButton)
+
+        let restartButton = makeButton(
+            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
+            fillColor: DesignSystem.Colors.buttonBackground,
+            text: "再来一局",
+            textColor: .white,
+            name: NodeName.restartButton
+        )
+        restartButton.position = CGPoint(x: card.position.x + 70, y: card.position.y - 86)
+        page.addChild(restartButton)
     }
 
-    private func closeHistoryOverlay() {
-        hideOverlay()
-        switch historyReturnPhase {
-        case .playing:
-            scenePhase = .playing
-        case .gameOver:
-            showGameOver()
-        case .history, .menu, .settings, .about, .privacy:
-            scenePhase = .playing
+    private func buildHistoryPage(into page: SKNode) {
+        let card = makeCardNode(size: DesignSystem.Layout.historyCardSize)
+        card.position = cardOrigin(for: .history)
+        page.addChild(card)
+
+        let snapshot = statsStore.snapshot()
+
+        let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
+        title.text = "历史记录"
+        title.position = CGPoint(x: card.position.x, y: card.position.y + 152)
+        page.addChild(title)
+
+        let summary = makeStatsSummary(snapshot: snapshot)
+        summary.position = CGPoint(x: card.position.x, y: card.position.y + 104)
+        page.addChild(summary)
+
+        let listTitle = makeLabel(font: DesignSystem.Fonts.historyRowTitleFont(), color: DesignSystem.Colors.textDark)
+        listTitle.horizontalAlignmentMode = .left
+        listTitle.text = "最近对局"
+        listTitle.position = CGPoint(x: card.position.x - 136, y: card.position.y + 54)
+        page.addChild(listTitle)
+
+        if snapshot.recentGames.isEmpty {
+            let emptyLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
+            emptyLabel.text = "还没有历史记录"
+            emptyLabel.position = CGPoint(x: card.position.x, y: card.position.y - 20)
+            page.addChild(emptyLabel)
+        } else {
+            for (index, game) in snapshot.recentGames.prefix(6).enumerated() {
+                let row = makeHistoryRow(game: game, rank: index + 1)
+                row.position = CGPoint(x: card.position.x, y: card.position.y + 20 - CGFloat(index) * 39)
+                page.addChild(row)
+            }
         }
+
+        let closeButton = makeButton(
+            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
+            fillColor: DesignSystem.Colors.buttonBackground,
+            text: "关闭",
+            textColor: .white,
+            name: NodeName.closeHistoryButton
+        )
+        closeButton.position = CGPoint(x: card.position.x, y: card.position.y - 172)
+        page.addChild(closeButton)
     }
 
-    private func closeMenuOverlay() {
-        hideOverlay()
-        switch historyReturnPhase {
-        case .gameOver:
-            showGameOver()
-        default:
-            scenePhase = .playing
-        }
+    private func buildMenuPage(into page: SKNode) {
+        let card = makeCardNode(size: DesignSystem.Layout.menuCardSize)
+        card.position = cardOrigin(for: .menu)
+        page.addChild(card)
+
+        let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
+        title.text = "菜单"
+        title.position = CGPoint(x: card.position.x, y: card.position.y + 98)
+        page.addChild(title)
+
+        let historyButton = makeButton(
+            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
+            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
+            text: "历史记录",
+            textColor: DesignSystem.Colors.textDark,
+            name: NodeName.menuHistoryButton
+        )
+        historyButton.position = CGPoint(x: card.position.x, y: card.position.y + 34)
+        page.addChild(historyButton)
+
+        let settingsButton = makeButton(
+            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
+            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
+            text: "设置",
+            textColor: DesignSystem.Colors.textDark,
+            name: NodeName.menuSettingsButton
+        )
+        settingsButton.position = CGPoint(x: card.position.x, y: card.position.y - 26)
+        page.addChild(settingsButton)
+
+        let closeButton = makeButton(
+            size: CGSize(width: 216, height: DesignSystem.Layout.modalButtonHeight),
+            fillColor: DesignSystem.Colors.buttonBackground,
+            text: "继续游戏",
+            textColor: .white,
+            name: NodeName.closeMenuButton
+        )
+        closeButton.position = CGPoint(x: card.position.x, y: card.position.y - 92)
+        page.addChild(closeButton)
     }
 
-    private func showSettings(from phase: ScenePhase) {
-        historyReturnPhase = phase
-        scenePhase = .settings
-        hideOverlay()
-
-        let overlay = makeOverlayRoot()
-        let card = makeCard(size: DesignSystem.Layout.settingsCardSize)
-        overlay.addChild(card)
+    private func buildSettingsPage(into page: SKNode) {
+        let card = makeCardNode(size: DesignSystem.Layout.settingsCardSize)
+        card.position = cardOrigin(for: .settings)
+        page.addChild(card)
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = "设置"
-        title.position = CGPoint(x: 0, y: 126)
-        card.addChild(title)
+        title.position = CGPoint(x: card.position.x, y: card.position.y + 126)
+        page.addChild(title)
 
         let soundRow = makeSettingsRow(
             title: "音效",
@@ -1018,16 +1132,16 @@ final class GameScene: SKScene {
             name: NodeName.soundToggleButton,
             emphasized: !audioManager.muted
         )
-        soundRow.position = CGPoint(x: 0, y: 62)
-        card.addChild(soundRow)
+        soundRow.position = CGPoint(x: card.position.x, y: card.position.y + 62)
+        page.addChild(soundRow)
 
         let aboutRow = makeSettingsRow(title: "关于三衍", detail: "玩法与版本", name: NodeName.aboutButton)
-        aboutRow.position = CGPoint(x: 0, y: 6)
-        card.addChild(aboutRow)
+        aboutRow.position = CGPoint(x: card.position.x, y: card.position.y + 6)
+        page.addChild(aboutRow)
 
         let privacyRow = makeSettingsRow(title: "隐私说明", detail: "本地数据与 Game Center", name: NodeName.privacyButton)
-        privacyRow.position = CGPoint(x: 0, y: -50)
-        card.addChild(privacyRow)
+        privacyRow.position = CGPoint(x: card.position.x, y: card.position.y - 50)
+        page.addChild(privacyRow)
 
         let closeButton = makeButton(
             size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
@@ -1036,56 +1150,42 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeSettingsButton
         )
-        closeButton.position = CGPoint(x: 0, y: -126)
-        card.addChild(closeButton)
-
-        overlayNode = overlay
-        addChild(overlay)
+        closeButton.position = CGPoint(x: card.position.x, y: card.position.y - 126)
+        page.addChild(closeButton)
     }
 
-    private func showAboutPage() {
-        showInfoPage(
-            phase: .about,
-            title: "关于三衍",
-            body: [
-                "三衍是一款轻量数字合成游戏。",
-                "核心规则：1 和 2 合成 3，之后相同数字继续合成。",
-                "目标是在有限空间里规划节奏，合成更高数字并刷新分数。"
-            ]
-        )
+    private func buildAboutPage(into page: SKNode) {
+        buildInfoPage(into: page, title: "关于三衍", lines: [
+            "三衍是一款轻量数字合成游戏。",
+            "核心规则：1 和 2 合成 3，之后相同数字继续合成。",
+            "目标是在有限空间里规划节奏，合成更高数字并刷新分数。"
+        ])
     }
 
-    private func showPrivacyPage() {
-        showInfoPage(
-            phase: .privacy,
-            title: "隐私说明",
-            body: [
-                "游戏记录、最高分和音效设置保存在本机。",
-                "启用 Game Center 时，只提交排行榜分数和成就进度。",
-                "应用不采集定位、通讯录或第三方广告追踪数据。"
-            ]
-        )
+    private func buildPrivacyPage(into page: SKNode) {
+        buildInfoPage(into: page, title: "隐私说明", lines: [
+            "游戏记录、最高分和音效设置保存在本机。",
+            "启用 Game Center 时，只提交排行榜分数和成就进度。",
+            "应用不采集定位、通讯录或第三方广告追踪数据。"
+        ])
     }
 
-    private func showInfoPage(phase: ScenePhase, title: String, body: [String]) {
-        scenePhase = phase
-        hideOverlay()
-
-        let overlay = makeOverlayRoot()
-        let card = makeCard(size: DesignSystem.Layout.infoCardSize)
-        overlay.addChild(card)
+    private func buildInfoPage(into page: SKNode, title: String, lines: [String]) {
+        let card = makeCardNode(size: DesignSystem.Layout.infoCardSize)
+        card.position = cardOrigin(for: .about)
+        page.addChild(card)
 
         let titleLabel = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         titleLabel.text = title
-        titleLabel.position = CGPoint(x: 0, y: 144)
-        card.addChild(titleLabel)
+        titleLabel.position = CGPoint(x: card.position.x, y: card.position.y + 144)
+        page.addChild(titleLabel)
 
-        for (index, line) in body.enumerated() {
+        for (index, line) in lines.enumerated() {
             let label = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
             label.horizontalAlignmentMode = .left
             label.text = line
-            label.position = CGPoint(x: -132, y: 74 - CGFloat(index) * 48)
-            card.addChild(label)
+            label.position = CGPoint(x: card.position.x - 132, y: card.position.y + 74 - CGFloat(index) * 48)
+            page.addChild(label)
         }
 
         let backButton = makeButton(
@@ -1095,8 +1195,8 @@ final class GameScene: SKScene {
             textColor: DesignSystem.Colors.textDark,
             name: NodeName.backToSettingsButton
         )
-        backButton.position = CGPoint(x: -70, y: -144)
-        card.addChild(backButton)
+        backButton.position = CGPoint(x: card.position.x - 70, y: card.position.y - 144)
+        page.addChild(backButton)
 
         let closeButton = makeButton(
             size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
@@ -1105,66 +1205,8 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeSettingsButton
         )
-        closeButton.position = CGPoint(x: 70, y: -144)
-        card.addChild(closeButton)
-
-        overlayNode = overlay
-        addChild(overlay)
-    }
-
-    private func closeSettingsOverlay() {
-        hideOverlay()
-        switch historyReturnPhase {
-        case .gameOver:
-            showGameOver()
-        default:
-            scenePhase = .playing
-        }
-    }
-
-    private func rebuildOverlayForCurrentPhase() {
-        switch scenePhase {
-        case .playing:
-            hideOverlay()
-        case .gameOver:
-            showGameOver()
-        case .history:
-            showHistory(from: historyReturnPhase)
-        case .menu:
-            showMenu(from: historyReturnPhase)
-        case .settings:
-            showSettings(from: historyReturnPhase)
-        case .about:
-            showAboutPage()
-        case .privacy:
-            showPrivacyPage()
-        }
-    }
-
-    private func makeOverlayRoot() -> SKNode {
-        let root = SKNode()
-        root.zPosition = 100
-
-        let scrim = SKSpriteNode(color: DesignSystem.Colors.overlayScrim, size: frame.size)
-        scrim.position = CGPoint(x: frame.midX, y: frame.midY)
-        scrim.name = NodeName.scrim
-        root.addChild(scrim)
-
-        return root
-    }
-
-    private func makeCard(size: CGSize) -> SKShapeNode {
-        let card = SKShapeNode(rectOf: size, cornerRadius: DesignSystem.Layout.modalCornerRadius)
-        card.fillColor = DesignSystem.Colors.cardBackground
-        card.strokeColor = UIColor.white.withAlphaComponent(0.6)
-        card.lineWidth = 1
-        card.position = CGPoint(x: frame.midX, y: frame.midY)
-        return card
-    }
-
-    private func hideOverlay() {
-        overlayNode?.removeFromParent()
-        overlayNode = nil
+        closeButton.position = CGPoint(x: card.position.x + 70, y: card.position.y - 144)
+        page.addChild(closeButton)
     }
 
     // MARK: - Touches
@@ -1179,11 +1221,11 @@ final class GameScene: SKScene {
             switch candidate.name {
             case NodeName.menuHudButton:
                 audioManager.playButton()
-                showMenu(from: scenePhase)
+                pushOverlay(phase: .menu)
                 return
             case NodeName.gameOverHistoryButton:
                 audioManager.playButton()
-                showHistory(from: .gameOver)
+                pushOverlay(phase: .history)
                 return
             case NodeName.restartButton:
                 audioManager.playButton()
@@ -1191,39 +1233,39 @@ final class GameScene: SKScene {
                 return
             case NodeName.closeHistoryButton:
                 audioManager.playButton()
-                closeHistoryOverlay()
+                closeAllOverlays()
                 return
             case NodeName.menuHistoryButton:
                 audioManager.playButton()
-                showHistory(from: historyReturnPhase)
+                pushOverlay(phase: .history)
                 return
             case NodeName.menuSettingsButton:
                 audioManager.playButton()
-                showSettings(from: historyReturnPhase)
+                pushOverlay(phase: .settings)
                 return
             case NodeName.closeMenuButton:
                 audioManager.playButton()
-                closeMenuOverlay()
+                closeAllOverlays()
                 return
             case NodeName.soundToggleButton:
                 audioManager.toggleMute()
-                showSettings(from: historyReturnPhase)
+                rebuildOverlayPage(for: .settings)
                 return
             case NodeName.aboutButton:
                 audioManager.playButton()
-                showAboutPage()
+                pushOverlay(phase: .about)
                 return
             case NodeName.privacyButton:
                 audioManager.playButton()
-                showPrivacyPage()
+                pushOverlay(phase: .privacy)
                 return
             case NodeName.backToSettingsButton:
                 audioManager.playButton()
-                showSettings(from: historyReturnPhase)
+                popOverlay()
                 return
             case NodeName.closeSettingsButton:
                 audioManager.playButton()
-                closeSettingsOverlay()
+                closeAllOverlays()
                 return
             default:
                 current = candidate.parent
