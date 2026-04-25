@@ -39,6 +39,7 @@ final class GameScene: SKScene {
     private var isAnimating = false
     private var scenePhase: ScenePhase = .playing
     private var didRecordCurrentGame = false
+    private var overlayBackground: SKSpriteNode?
     private var mergeStreak = 0
     private var pendingSwipe: SwipeDirection?
 
@@ -835,10 +836,7 @@ final class GameScene: SKScene {
         if overlayRoot == nil {
             overlayRoot = SKNode()
             overlayRoot?.zPosition = 100
-            let scrim = SKSpriteNode(color: DesignSystem.Colors.overlayScrim, size: frame.size)
-            scrim.position = CGPoint(x: frame.midX, y: frame.midY)
-            scrim.name = NodeName.scrim
-            overlayRoot?.addChild(scrim)
+            overlayRoot?.isUserInteractionEnabled = true
             addChild(overlayRoot!)
         }
 
@@ -846,9 +844,16 @@ final class GameScene: SKScene {
 
         // Determine animation direction
         let isVertical = phase == .menu
-        let offset: CGFloat = 320
+        let offset: CGFloat = frame.height
         let startX: CGFloat = isVertical ? 0 : (phase == .history ? -offset : offset)
         let endX: CGFloat = 0
+
+        // Page background - full screen, no card, no scrim
+        let bg = SKSpriteNode(color: DesignSystem.Colors.overlayScrim, size: frame.size)
+        bg.position = CGPoint(x: frame.midX, y: frame.midY)
+        bg.name = NodeName.pageBackground
+        page.addChild(bg)
+        self.overlayBackground = bg
 
         page.position = CGPoint(x: startX, y: isVertical ? -offset : 0)
         page.zPosition = root.zPosition + 10
@@ -921,6 +926,7 @@ final class GameScene: SKScene {
         overlayRoot = nil
         overlayPages.removeAll()
         pageStack.removeAll()
+        overlayBackground = nil
         scenePhase = .playing
         isAnimating = false
     }
@@ -953,59 +959,39 @@ final class GameScene: SKScene {
         return page
     }
 
-    private func cardOrigin(for phase: ScenePhase) -> CGPoint {
-        let size: CGSize
-        switch phase {
-        case .gameOver:   size = DesignSystem.Layout.modalCardSize
-        case .history:   size = DesignSystem.Layout.historyCardSize
-        case .menu:      size = DesignSystem.Layout.menuCardSize
-        case .settings:  size = DesignSystem.Layout.settingsCardSize
-        case .about, .privacy: size = DesignSystem.Layout.infoCardSize
-        default:          size = DesignSystem.Layout.modalCardSize
-        }
-        return CGPoint(x: frame.midX, y: frame.midY - size.height / 2)
-    }
-
-    private func makeCardNode(size: CGSize) -> SKShapeNode {
-        let card = SKShapeNode(rectOf: size, cornerRadius: DesignSystem.Layout.modalCornerRadius)
-        card.fillColor = DesignSystem.Colors.cardBackground
-        card.strokeColor = UIColor.white.withAlphaComponent(0.6)
-        card.lineWidth = 1
-        return card
-    }
+    // MARK: - Touches
 
     // MARK: - Page Content Builders
 
     private func buildGameOverPage(into page: SKNode) {
-        let card = makeCardNode(size: DesignSystem.Layout.modalCardSize)
-        card.position = cardOrigin(for: .gameOver)
-        page.addChild(card)
-
-        let snapshot = statsStore.snapshot()
+        let cx = frame.midX
+        let cy = frame.midY
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = "游戏结束"
-        title.position = CGPoint(x: card.position.x, y: card.position.y + 90)
+        title.position = CGPoint(x: cx, y: cy + 90)
         page.addChild(title)
+
+        let snapshot = statsStore.snapshot()
 
         let scoreTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
         scoreTitle.text = "本局分数"
-        scoreTitle.position = CGPoint(x: card.position.x - 70, y: card.position.y + 34)
+        scoreTitle.position = CGPoint(x: cx - 70, y: cy + 34)
         page.addChild(scoreTitle)
 
         let scoreValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
         scoreValue.text = formatScore(model.score)
-        scoreValue.position = CGPoint(x: card.position.x + 72, y: card.position.y + 32)
+        scoreValue.position = CGPoint(x: cx + 72, y: cy + 32)
         page.addChild(scoreValue)
 
         let bestTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
         bestTitle.text = "历史最高"
-        bestTitle.position = CGPoint(x: card.position.x - 70, y: card.position.y - 8)
+        bestTitle.position = CGPoint(x: cx - 70, y: cy - 8)
         page.addChild(bestTitle)
 
         let bestValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
         bestValue.text = formatScore(snapshot.bestScore)
-        bestValue.position = CGPoint(x: card.position.x + 72, y: card.position.y - 10)
+        bestValue.position = CGPoint(x: cx + 72, y: cy - 10)
         page.addChild(bestValue)
 
         let historyButton = makeButton(
@@ -1015,7 +1001,7 @@ final class GameScene: SKScene {
             textColor: DesignSystem.Colors.textDark,
             name: NodeName.gameOverHistoryButton
         )
-        historyButton.position = CGPoint(x: card.position.x - 70, y: card.position.y - 86)
+        historyButton.position = CGPoint(x: cx - 70, y: cy - 86)
         page.addChild(historyButton)
 
         let restartButton = makeButton(
@@ -1025,41 +1011,39 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.restartButton
         )
-        restartButton.position = CGPoint(x: card.position.x + 70, y: card.position.y - 86)
+        restartButton.position = CGPoint(x: cx + 70, y: cy - 86)
         page.addChild(restartButton)
     }
 
     private func buildHistoryPage(into page: SKNode) {
-        let card = makeCardNode(size: DesignSystem.Layout.historyCardSize)
-        card.position = cardOrigin(for: .history)
-        page.addChild(card)
-
+        let cx = frame.midX
+        let cy = frame.midY
         let snapshot = statsStore.snapshot()
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = "历史记录"
-        title.position = CGPoint(x: card.position.x, y: card.position.y + 152)
+        title.position = CGPoint(x: cx, y: cy + 160)
         page.addChild(title)
 
         let summary = makeStatsSummary(snapshot: snapshot)
-        summary.position = CGPoint(x: card.position.x, y: card.position.y + 104)
+        summary.position = CGPoint(x: cx, y: cy + 104)
         page.addChild(summary)
 
         let listTitle = makeLabel(font: DesignSystem.Fonts.historyRowTitleFont(), color: DesignSystem.Colors.textDark)
         listTitle.horizontalAlignmentMode = .left
         listTitle.text = "最近对局"
-        listTitle.position = CGPoint(x: card.position.x - 136, y: card.position.y + 54)
+        listTitle.position = CGPoint(x: cx - 136, y: cy + 54)
         page.addChild(listTitle)
 
         if snapshot.recentGames.isEmpty {
             let emptyLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
             emptyLabel.text = "还没有历史记录"
-            emptyLabel.position = CGPoint(x: card.position.x, y: card.position.y - 20)
+            emptyLabel.position = CGPoint(x: cx, y: cy - 20)
             page.addChild(emptyLabel)
         } else {
             for (index, game) in snapshot.recentGames.prefix(6).enumerated() {
                 let row = makeHistoryRow(game: game, rank: index + 1)
-                row.position = CGPoint(x: card.position.x, y: card.position.y + 20 - CGFloat(index) * 39)
+                row.position = CGPoint(x: cx, y: cy + 20 - CGFloat(index) * 39)
                 page.addChild(row)
             }
         }
@@ -1071,18 +1055,17 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeHistoryButton
         )
-        closeButton.position = CGPoint(x: card.position.x, y: card.position.y - 172)
+        closeButton.position = CGPoint(x: cx, y: cy - 172)
         page.addChild(closeButton)
     }
 
     private func buildMenuPage(into page: SKNode) {
-        let card = makeCardNode(size: DesignSystem.Layout.menuCardSize)
-        card.position = cardOrigin(for: .menu)
-        page.addChild(card)
+        let cx = frame.midX
+        let cy = frame.midY
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = "菜单"
-        title.position = CGPoint(x: card.position.x, y: card.position.y + 98)
+        title.position = CGPoint(x: cx, y: cy + 110)
         page.addChild(title)
 
         let historyButton = makeButton(
@@ -1092,7 +1075,7 @@ final class GameScene: SKScene {
             textColor: DesignSystem.Colors.textDark,
             name: NodeName.menuHistoryButton
         )
-        historyButton.position = CGPoint(x: card.position.x, y: card.position.y + 34)
+        historyButton.position = CGPoint(x: cx, y: cy + 30)
         page.addChild(historyButton)
 
         let settingsButton = makeButton(
@@ -1102,7 +1085,7 @@ final class GameScene: SKScene {
             textColor: DesignSystem.Colors.textDark,
             name: NodeName.menuSettingsButton
         )
-        settingsButton.position = CGPoint(x: card.position.x, y: card.position.y - 26)
+        settingsButton.position = CGPoint(x: cx, y: cy - 30)
         page.addChild(settingsButton)
 
         let closeButton = makeButton(
@@ -1112,18 +1095,17 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeMenuButton
         )
-        closeButton.position = CGPoint(x: card.position.x, y: card.position.y - 92)
+        closeButton.position = CGPoint(x: cx, y: cy - 96)
         page.addChild(closeButton)
     }
 
     private func buildSettingsPage(into page: SKNode) {
-        let card = makeCardNode(size: DesignSystem.Layout.settingsCardSize)
-        card.position = cardOrigin(for: .settings)
-        page.addChild(card)
+        let cx = frame.midX
+        let cy = frame.midY
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = "设置"
-        title.position = CGPoint(x: card.position.x, y: card.position.y + 126)
+        title.position = CGPoint(x: cx, y: cy + 140)
         page.addChild(title)
 
         let soundRow = makeSettingsRow(
@@ -1132,15 +1114,15 @@ final class GameScene: SKScene {
             name: NodeName.soundToggleButton,
             emphasized: !audioManager.muted
         )
-        soundRow.position = CGPoint(x: card.position.x, y: card.position.y + 62)
+        soundRow.position = CGPoint(x: cx, y: cy + 70)
         page.addChild(soundRow)
 
         let aboutRow = makeSettingsRow(title: "关于三衍", detail: "玩法与版本", name: NodeName.aboutButton)
-        aboutRow.position = CGPoint(x: card.position.x, y: card.position.y + 6)
+        aboutRow.position = CGPoint(x: cx, y: cy + 14)
         page.addChild(aboutRow)
 
         let privacyRow = makeSettingsRow(title: "隐私说明", detail: "本地数据与 Game Center", name: NodeName.privacyButton)
-        privacyRow.position = CGPoint(x: card.position.x, y: card.position.y - 50)
+        privacyRow.position = CGPoint(x: cx, y: cy - 42)
         page.addChild(privacyRow)
 
         let closeButton = makeButton(
@@ -1150,7 +1132,7 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeSettingsButton
         )
-        closeButton.position = CGPoint(x: card.position.x, y: card.position.y - 126)
+        closeButton.position = CGPoint(x: cx, y: cy - 126)
         page.addChild(closeButton)
     }
 
@@ -1171,20 +1153,19 @@ final class GameScene: SKScene {
     }
 
     private func buildInfoPage(into page: SKNode, title: String, lines: [String]) {
-        let card = makeCardNode(size: DesignSystem.Layout.infoCardSize)
-        card.position = cardOrigin(for: .about)
-        page.addChild(card)
+        let cx = frame.midX
+        let cy = frame.midY
 
         let titleLabel = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         titleLabel.text = title
-        titleLabel.position = CGPoint(x: card.position.x, y: card.position.y + 144)
+        titleLabel.position = CGPoint(x: cx, y: cy + 144)
         page.addChild(titleLabel)
 
         for (index, line) in lines.enumerated() {
             let label = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
             label.horizontalAlignmentMode = .left
             label.text = line
-            label.position = CGPoint(x: card.position.x - 132, y: card.position.y + 74 - CGFloat(index) * 48)
+            label.position = CGPoint(x: cx - 132, y: cy + 74 - CGFloat(index) * 48)
             page.addChild(label)
         }
 
@@ -1195,7 +1176,7 @@ final class GameScene: SKScene {
             textColor: DesignSystem.Colors.textDark,
             name: NodeName.backToSettingsButton
         )
-        backButton.position = CGPoint(x: card.position.x - 70, y: card.position.y - 144)
+        backButton.position = CGPoint(x: cx - 70, y: cy - 144)
         page.addChild(backButton)
 
         let closeButton = makeButton(
@@ -1205,7 +1186,7 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeSettingsButton
         )
-        closeButton.position = CGPoint(x: card.position.x + 70, y: card.position.y - 144)
+        closeButton.position = CGPoint(x: cx + 70, y: cy - 144)
         page.addChild(closeButton)
     }
 
@@ -1440,6 +1421,7 @@ private enum NodeName {
     static let cell = "cell"
     static let boardPanel = "boardPanel"
     static let scrim = "scrim"
+    static let pageBackground = "pageBackground"
     static let menuHudButton = "menuHudButton"
     static let gameOverHistoryButton = "gameOverHistoryButton"
     static let restartButton = "restartButton"
