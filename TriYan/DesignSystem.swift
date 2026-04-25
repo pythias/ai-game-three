@@ -8,6 +8,10 @@ enum DesignSystem {
         static let background = UIColor(hex: "#FAF8EF")
         static let textDark = UIColor(hex: "#776E65")
         static let textLight = UIColor.white
+        static let overlayScrim = UIColor.black.withAlphaComponent(0.28)
+        static let cardBackground = UIColor(hex: "#FFF8EE")
+        static let buttonBackground = UIColor(hex: "#F08B4B")
+        static let buttonSecondaryBackground = UIColor(hex: "#F2E5D5")
 
         static func tileBackground(for value: Int) -> UIColor {
             switch value {
@@ -42,6 +46,15 @@ enum DesignSystem {
         static let cellCornerRadius: CGFloat = 8
         static let tileCornerRadius: CGFloat = 6
         static let gridWidthRatio: CGFloat = 0.9
+        static let screenPadding: CGFloat = 20
+        static let hudTopInset: CGFloat = 12
+        static let hudTitleWidth: CGFloat = 88
+        static let hudScoreWidth: CGFloat = 112
+        static let hudButtonSize = CGSize(width: 36, height: 36)
+        static let modalCardSize = CGSize(width: 314, height: 274)
+        static let modalCornerRadius: CGFloat = 22
+        static let modalButtonHeight: CGFloat = 48
+        static let historyCardSize = CGSize(width: 336, height: 386)
 
         static func gridSize(in view: SKView) -> CGFloat {
             view.bounds.width * gridWidthRatio
@@ -61,6 +74,46 @@ enum DesignSystem {
 
     // MARK: - Fonts
     enum Fonts {
+        private static func rounded(_ size: CGFloat, weight: UIFont.Weight) -> UIFont {
+            let base = UIFont.systemFont(ofSize: size, weight: weight)
+            if let descriptor = base.fontDescriptor.withDesign(.rounded) {
+                return UIFont(descriptor: descriptor, size: size)
+            }
+            return base
+        }
+
+        static func titleFont() -> UIFont {
+            rounded(30, weight: .heavy)
+        }
+
+        static func hudLabelFont() -> UIFont {
+            rounded(16, weight: .semibold)
+        }
+
+        static func hudValueFont() -> UIFont {
+            rounded(22, weight: .bold)
+        }
+
+        static func buttonFont() -> UIFont {
+            rounded(18, weight: .bold)
+        }
+
+        static func modalTitleFont() -> UIFont {
+            rounded(28, weight: .heavy)
+        }
+
+        static func modalValueFont() -> UIFont {
+            rounded(22, weight: .bold)
+        }
+
+        static func historyRowTitleFont() -> UIFont {
+            rounded(18, weight: .bold)
+        }
+
+        static func historyRowBodyFont() -> UIFont {
+            rounded(14, weight: .medium)
+        }
+
         static func tileFont(for value: Int) -> UIFont {
             let size: CGFloat
             if value < 100 {
@@ -72,7 +125,7 @@ enum DesignSystem {
             } else {
                 size = 24
             }
-            return UIFont.boldSystemFont(ofSize: size)
+            return rounded(size, weight: .bold)
         }
     }
 }
