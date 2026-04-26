@@ -4,6 +4,8 @@ struct GameRecord: Codable, Equatable {
     let playedAt: Date
     let score: Int
     let maxTile: Int
+    let boardSnapshot: [Int]?
+    let unlockedAchievementIDs: [String]?
 }
 
 struct StatsSnapshot {
@@ -33,7 +35,12 @@ final class StatsStore {
         decoder.dateDecodingStrategy = .iso8601
     }
 
-    func recordGame(resultScore: Int, histogram: [(value: Int, count: Int)]) {
+    func recordGame(
+        resultScore: Int,
+        histogram: [(value: Int, count: Int)],
+        boardSnapshot: [Int],
+        unlockedAchievementIDs: [String]
+    ) {
         var topScores = defaults.array(forKey: topScoresKey) as? [Int] ?? []
         topScores.append(resultScore)
         topScores.sort(by: >)
@@ -54,7 +61,9 @@ final class StatsStore {
         let record = GameRecord(
             playedAt: Date(),
             score: resultScore,
-            maxTile: histogram.last(where: { $0.count > 0 })?.value ?? 0
+            maxTile: boardSnapshot.max() ?? 0,
+            boardSnapshot: boardSnapshot,
+            unlockedAchievementIDs: unlockedAchievementIDs
         )
         var recentGames = loadRecentGames()
         recentGames.insert(record, at: 0)

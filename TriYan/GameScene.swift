@@ -36,6 +36,7 @@ final class GameScene: SKScene {
     private var pageStack: [ScenePhase] = []
     private var achievementToastNode: SKNode?
     private var currentMenuOverlayPage: MenuOverlayPage = .settings
+    private var currentGameAchievementIDs: [String] = []
 
     private var isAnimating = false
     private var scenePhase: ScenePhase = .playing
@@ -56,6 +57,13 @@ final class GameScene: SKScene {
         return formatter
     }()
 
+    private let achievementDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM/dd HH:mm"
+        return formatter
+    }()
+
     // MARK: - Lifecycle
 
     override func didMove(to view: SKView) {
@@ -66,6 +74,7 @@ final class GameScene: SKScene {
             layoutScene()
             prewarmTileTextures()
             startNewGame()
+            syncHistoricalAchievements()
         } else {
             layoutScene()
         }
@@ -269,6 +278,7 @@ final class GameScene: SKScene {
         isAnimating = false
         mergeStreak = 0
         pendingSwipe = nil
+        currentGameAchievementIDs.removeAll()
         achievementToastNode?.removeFromParent()
         achievementToastNode = nil
 
@@ -295,6 +305,15 @@ final class GameScene: SKScene {
         }
 
         updateHUD()
+    }
+
+    private func syncHistoricalAchievements() {
+        let snapshot = statsStore.snapshot()
+        gameCenterService.syncHistoricalAchievements(
+            score: snapshot.bestScore,
+            maxTile: snapshot.maxTileEver,
+            gamesPlayed: snapshot.gamesPlayed
+        )
     }
 
     private func handleSwipe(_ swipe: SwipeDirection) {
@@ -376,6 +395,7 @@ final class GameScene: SKScene {
 
         updateHUD()
         showMergeFeedback(for: result)
+        unlockRealtimeAchievementsIfNeeded()
         isAnimating = false
 
         if model.isGameOver {
@@ -732,6 +752,7 @@ final class GameScene: SKScene {
             audioManager.playGameOver()
         }
         scenePhase = .gameOver
+        updateGameOverAppearance(isActive: true)
         pushOverlay(phase: .gameOver, animated: true)
         showAchievementToasts(achievementUnlocks)
     }
@@ -744,22 +765,43 @@ final class GameScene: SKScene {
         guard !didRecordCurrentGame else { return [] }
 
         let previousBest = statsStore.bestScore()
+        let completedGamesPlayed = statsStore.snapshot().gamesPlayed + 1
+        let gameOverUnlocks = gameCenterService.reportAchievements(
+            score: model.score,
+            maxTile: model.maxTileValue,
+            gamesPlayed: completedGamesPlayed
+        )
+        rememberCurrentGameAchievements(gameOverUnlocks)
+
         statsStore.recordGame(
             resultScore: model.score,
-            histogram: model.tileHistogramFromThree()
+            histogram: model.tileHistogramFromThree(),
+            boardSnapshot: model.boardSnapshot,
+            unlockedAchievementIDs: currentGameAchievementIDs
         )
-        let snapshot = statsStore.snapshot()
 
         if model.score >= previousBest {
             gameCenterService.submit(score: model.score)
         }
 
         didRecordCurrentGame = true
-        return gameCenterService.reportAchievements(
+        return gameOverUnlocks
+    }
+
+    private func unlockRealtimeAchievementsIfNeeded() {
+        let unlocks = gameCenterService.reportAchievements(
             score: model.score,
             maxTile: model.maxTileValue,
-            gamesPlayed: snapshot.gamesPlayed
+            gamesPlayed: statsStore.snapshot().gamesPlayed
         )
+        rememberCurrentGameAchievements(unlocks)
+        showAchievementToasts(unlocks)
+    }
+
+    private func rememberCurrentGameAchievements(_ unlocks: [AchievementUnlock]) {
+        for unlock in unlocks where !currentGameAchievementIDs.contains(unlock.identifier) {
+            currentGameAchievementIDs.append(unlock.identifier)
+        }
     }
 
     private func makeStatsSummary(snapshot: StatsSnapshot) -> SKNode {
@@ -797,38 +839,96 @@ final class GameScene: SKScene {
         let row = SKNode()
 
         let background = SKShapeNode(
-            rectOf: CGSize(width: 292, height: 34),
-            cornerRadius: 13
+            rectOf: CGSize(width: 292, height: 58),
+            cornerRadius: 16
         )
         background.fillColor = UIColor.white.withAlphaComponent(rank == 1 ? 0.76 : 0.54)
         background.strokeColor = rank == 1 ? DesignSystem.Colors.progressFill.withAlphaComponent(0.25) : .clear
         background.lineWidth = rank == 1 ? 1 : 0
         row.addChild(background)
 
+        let board = makeHistoryBoardSnapshot(game.boardSnapshot, tileSize: 9, spacing: 2, showValues: false)
+        board.position = CGPoint(x: -112, y: 0)
+        row.addChild(board)
+
         let rankLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
         rankLabel.text = "#\(rank)"
         rankLabel.alpha = 0.62
-        rankLabel.position = CGPoint(x: -124, y: -1)
+        rankLabel.horizontalAlignmentMode = .left
+        rankLabel.position = CGPoint(x: -72, y: 12)
         row.addChild(rankLabel)
 
         let timeLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
         timeLabel.horizontalAlignmentMode = .left
         timeLabel.text = historyDateFormatter.string(from: game.playedAt)
-        timeLabel.position = CGPoint(x: -96, y: -1)
+        timeLabel.alpha = 0.68
+        timeLabel.position = CGPoint(x: -36, y: 12)
         row.addChild(timeLabel)
 
-        let scoreLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
+        let scoreLabel = makeLabel(font: DesignSystem.Fonts.historyRowTitleFont(), color: DesignSystem.Colors.textDark)
+        scoreLabel.horizontalAlignmentMode = .left
         scoreLabel.text = "\(formatScore(game.score)) 分"
-        scoreLabel.position = CGPoint(x: 28, y: -1)
+        scoreLabel.position = CGPoint(x: -72, y: -12)
         row.addChild(scoreLabel)
 
         let maxTileLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
         maxTileLabel.horizontalAlignmentMode = .right
-        maxTileLabel.text = "\(game.maxTile)"
-        maxTileLabel.position = CGPoint(x: 130, y: -1)
+        maxTileLabel.text = "最高 \(game.maxTile)"
+        maxTileLabel.position = CGPoint(x: 130, y: -12)
         row.addChild(maxTileLabel)
 
         return row
+    }
+
+    private func makeHistoryBoardSnapshot(
+        _ snapshot: [Int]?,
+        tileSize: CGFloat,
+        spacing: CGFloat,
+        showValues: Bool
+    ) -> SKNode {
+        let root = SKNode()
+        let values = normalizedSnapshot(snapshot)
+        let boardSize = tileSize * 4 + spacing * 3
+
+        let background = SKShapeNode(rectOf: CGSize(width: boardSize + 8, height: boardSize + 8), cornerRadius: max(6, tileSize * 0.34))
+        background.fillColor = DesignSystem.Colors.boardBackground
+        background.strokeColor = UIColor.white.withAlphaComponent(0.5)
+        background.lineWidth = 1
+        root.addChild(background)
+
+        for row in 0..<4 {
+            for col in 0..<4 {
+                let value = values[row * 4 + col]
+                let cell = SKShapeNode(rectOf: CGSize(width: tileSize, height: tileSize), cornerRadius: max(2, tileSize * 0.22))
+                cell.fillColor = value > 0 ? DesignSystem.Colors.tileBackground(for: value) : DesignSystem.Colors.emptyCell
+                cell.strokeColor = UIColor.white.withAlphaComponent(value > 0 ? 0.28 : 0.14)
+                cell.lineWidth = 0.7
+                cell.alpha = 1
+                cell.position = CGPoint(
+                    x: CGFloat(col) * (tileSize + spacing) - boardSize / 2 + tileSize / 2,
+                    y: CGFloat(3 - row) * (tileSize + spacing) - boardSize / 2 + tileSize / 2
+                )
+                root.addChild(cell)
+
+                if showValues, value > 0 {
+                    let label = makeLabel(font: DesignSystem.Fonts.tileFont(for: value), color: DesignSystem.Colors.tileText(for: value))
+                    label.fontSize = value < 100 ? 18 : 15
+                    label.text = "\(value)"
+                    label.position = cell.position
+                    root.addChild(label)
+                }
+            }
+        }
+
+        return root
+    }
+
+    private func normalizedSnapshot(_ snapshot: [Int]?) -> [Int] {
+        var values = snapshot ?? []
+        if values.count < 16 {
+            values += Array(repeating: 0, count: 16 - values.count)
+        }
+        return Array(values.prefix(16))
     }
 
     // MARK: - Overlay Navigation
@@ -854,19 +954,23 @@ final class GameScene: SKScene {
         guard let root = overlayRoot else { return }
 
         // Determine animation direction
+        let isGameOver = phase == .gameOver
         let isVertical = phase == .menu
         let verticalOffset: CGFloat = frame.height
         let horizontalOffset: CGFloat = frame.width
         let startX: CGFloat = isVertical ? 0 : (phase == .history ? -horizontalOffset : horizontalOffset)
         let endX: CGFloat = 0
 
-        page.position = CGPoint(x: startX, y: isVertical ? -verticalOffset : 0)
+        page.position = isGameOver ? .zero : CGPoint(x: startX, y: isVertical ? -verticalOffset : 0)
         page.zPosition = root.zPosition + 10
         root.addChild(page)
 
         let duration: TimeInterval = animated ? 0.28 : 0.01
         let slide: SKAction
-        if isVertical {
+        if isGameOver {
+            page.alpha = animated ? 0 : 1
+            slide = SKAction.fadeIn(withDuration: duration)
+        } else if isVertical {
             slide = SKAction.move(to: CGPoint(x: 0, y: 0), duration: duration)
         } else {
             slide = SKAction.move(to: CGPoint(x: endX, y: 0), duration: duration)
@@ -881,6 +985,7 @@ final class GameScene: SKScene {
             ]))
         } else {
             page.position = CGPoint(x: endX, y: 0)
+            page.alpha = 1
         }
 
         pageStack.append(phase)
@@ -935,6 +1040,7 @@ final class GameScene: SKScene {
         currentMenuOverlayPage = .settings
         scenePhase = .playing
         isAnimating = false
+        updateGameOverAppearance(isActive: false)
     }
 
     private func rebuildOverlayPage(for phase: ScenePhase) {
@@ -951,18 +1057,38 @@ final class GameScene: SKScene {
         oldPage?.removeFromParent()
     }
 
+    private func updateGameOverAppearance(isActive: Bool) {
+        let boardAlpha: CGFloat = isActive ? 0.42 : 1
+        let hudAlpha: CGFloat = isActive ? 0.72 : 1
+
+        backgroundNode.alpha = isActive ? 0.58 : 1
+        gridNode.alpha = boardAlpha
+        titleCardNode.alpha = hudAlpha
+        titleLabel.alpha = hudAlpha
+        subtitleLabel.alpha = isActive ? 0.46 : 0.72
+        nextCardNode.alpha = hudAlpha
+        nextTitleLabel.alpha = hudAlpha
+        nextPreviewNode.alpha = hudAlpha
+        scoreCardNode.alpha = hudAlpha
+        scoreTitleLabel.alpha = hudAlpha
+        scoreValueLabel.alpha = hudAlpha
+        bestValueLabel.alpha = isActive ? 0.56 : 0.74
+        menuButton.alpha = isActive ? 0.4 : 1
+    }
+
     // MARK: - Overlay Page Builders
 
     private func buildOverlayPage(for phase: ScenePhase) -> SKNode {
         let page = SKNode()
-        let backgroundColor = phase == .menu
-            ? DesignSystem.Colors.background
-            : DesignSystem.Colors.overlayScrim
-        let pageBackground = SKSpriteNode(color: backgroundColor, size: frame.size)
-        pageBackground.position = CGPoint(x: frame.midX, y: frame.midY)
-        pageBackground.name = NodeName.pageBackground
-        pageBackground.zPosition = -1
-        page.addChild(pageBackground)
+
+        if phase != .gameOver {
+            let backgroundColor = DesignSystem.Colors.background
+            let pageBackground = SKSpriteNode(color: backgroundColor, size: frame.size)
+            pageBackground.position = CGPoint(x: frame.midX, y: frame.midY)
+            pageBackground.name = NodeName.pageBackground
+            pageBackground.zPosition = -1
+            page.addChild(pageBackground)
+        }
 
         switch phase {
         case .gameOver:
@@ -988,54 +1114,25 @@ final class GameScene: SKScene {
     // MARK: - Page Content Builders
 
     private func buildGameOverPage(into page: SKNode) {
-        let cx = frame.midX
-        let cy = frame.midY
+        guard let view else { return }
+
+        let gridSize = DesignSystem.Layout.gridSize(in: view)
+        let boardBottomY = gridNode.position.y - gridSize / 2 - 9
+        let buttonY = boardBottomY - 66
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = "游戏结束"
-        title.position = CGPoint(x: cx, y: cy + 90)
+        title.position = CGPoint(x: frame.midX, y: buttonY + 56)
         page.addChild(title)
 
-        let snapshot = statsStore.snapshot()
-
-        let scoreTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
-        scoreTitle.text = "本局分数"
-        scoreTitle.position = CGPoint(x: cx - 70, y: cy + 34)
-        page.addChild(scoreTitle)
-
-        let scoreValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
-        scoreValue.text = formatScore(model.score)
-        scoreValue.position = CGPoint(x: cx + 72, y: cy + 32)
-        page.addChild(scoreValue)
-
-        let bestTitle = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
-        bestTitle.text = "历史最高"
-        bestTitle.position = CGPoint(x: cx - 70, y: cy - 8)
-        page.addChild(bestTitle)
-
-        let bestValue = makeLabel(font: DesignSystem.Fonts.modalValueFont(), color: DesignSystem.Colors.textDark)
-        bestValue.text = formatScore(snapshot.bestScore)
-        bestValue.position = CGPoint(x: cx + 72, y: cy - 10)
-        page.addChild(bestValue)
-
-        let historyButton = makeButton(
-            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
-            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
-            text: "历史记录",
-            textColor: DesignSystem.Colors.textDark,
-            name: NodeName.gameOverHistoryButton
-        )
-        historyButton.position = CGPoint(x: cx - 70, y: cy - 86)
-        page.addChild(historyButton)
-
         let restartButton = makeButton(
-            size: CGSize(width: 126, height: DesignSystem.Layout.modalButtonHeight),
+            size: CGSize(width: 180, height: DesignSystem.Layout.modalButtonHeight),
             fillColor: DesignSystem.Colors.buttonBackground,
-            text: "再来一局",
+            text: "重来一局",
             textColor: .white,
             name: NodeName.restartButton
         )
-        restartButton.position = CGPoint(x: cx + 70, y: cy - 86)
+        restartButton.position = CGPoint(x: frame.midX, y: buttonY)
         page.addChild(restartButton)
     }
 
@@ -1043,31 +1140,39 @@ final class GameScene: SKScene {
         let cx = frame.midX
         let cy = frame.midY
         let snapshot = statsStore.snapshot()
+        let rowSpacing: CGFloat = 62
+        let listStartY = min(frame.maxY - 216, cy + 48)
+        let closeButtonY = max(frame.minY + 58, cy - 198)
+        let availableListHeight = max(0, listStartY - (closeButtonY + 48))
+        let visibleRecordCount = min(
+            snapshot.recentGames.count,
+            max(4, min(6, Int(availableListHeight / rowSpacing) + 1))
+        )
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = "历史记录"
-        title.position = CGPoint(x: cx, y: cy + 160)
+        title.position = CGPoint(x: cx, y: min(frame.maxY - 78, cy + 184))
         page.addChild(title)
 
         let summary = makeStatsSummary(snapshot: snapshot)
-        summary.position = CGPoint(x: cx, y: cy + 104)
+        summary.position = CGPoint(x: cx, y: min(frame.maxY - 134, cy + 128))
         page.addChild(summary)
 
         let listTitle = makeLabel(font: DesignSystem.Fonts.historyRowTitleFont(), color: DesignSystem.Colors.textDark)
         listTitle.horizontalAlignmentMode = .left
         listTitle.text = "最近对局"
-        listTitle.position = CGPoint(x: cx - 136, y: cy + 54)
+        listTitle.position = CGPoint(x: cx - 136, y: listStartY + 34)
         page.addChild(listTitle)
 
         if snapshot.recentGames.isEmpty {
             let emptyLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
-            emptyLabel.text = "还没有历史记录"
-            emptyLabel.position = CGPoint(x: cx, y: cy - 20)
+            emptyLabel.text = "还没有历史记录，先玩几局再回来看看"
+            emptyLabel.position = CGPoint(x: cx, y: listStartY - 32)
             page.addChild(emptyLabel)
         } else {
-            for (index, game) in snapshot.recentGames.prefix(6).enumerated() {
+            for (index, game) in snapshot.recentGames.prefix(visibleRecordCount).enumerated() {
                 let row = makeHistoryRow(game: game, rank: index + 1)
-                row.position = CGPoint(x: cx, y: cy + 20 - CGFloat(index) * 39)
+                row.position = CGPoint(x: cx, y: listStartY - CGFloat(index) * rowSpacing)
                 page.addChild(row)
             }
         }
@@ -1079,17 +1184,19 @@ final class GameScene: SKScene {
             textColor: .white,
             name: NodeName.closeHistoryButton
         )
-        closeButton.position = CGPoint(x: cx, y: cy - 172)
+        closeButton.position = CGPoint(x: cx, y: closeButtonY)
         page.addChild(closeButton)
     }
 
     private func buildMenuPage(into page: SKNode) {
         let cx = frame.midX
-        let cy = frame.midY
         let topInset = max(view?.safeAreaInsets.top ?? 44, 44)
         let bottomInset = max(view?.safeAreaInsets.bottom ?? 24, 24)
         let headerY = frame.maxY - topInset - 44
-        let contentCenter = CGPoint(x: cx, y: cy + 10)
+        let footerCenter = CGPoint(x: cx, y: frame.minY + bottomInset + 94)
+        let contentTopY = headerY - 78
+        let contentBottomY = footerCenter.y + 74
+        let contentCenter = CGPoint(x: cx, y: (contentTopY + contentBottomY) / 2)
 
         let title = makeLabel(font: DesignSystem.Fonts.modalTitleFont(), color: DesignSystem.Colors.textDark)
         title.text = currentMenuOverlayPage.title
@@ -1116,14 +1223,21 @@ final class GameScene: SKScene {
         hint.position = CGPoint(x: cx, y: headerY - 38)
         page.addChild(hint)
 
+        let contentCard = makeSurfaceCard(size: CGSize(width: 336, height: max(260, contentTopY - contentBottomY)))
+        contentCard.position = contentCenter
+        contentCard.zPosition = -0.1
+        page.addChild(contentCard)
+
         buildMenuOverlayContent(into: page, center: contentCenter)
-        buildMenuOverlayFooter(into: page, center: CGPoint(x: cx, y: frame.minY + bottomInset + 94))
+        buildMenuOverlayFooter(into: page, center: footerCenter)
     }
 
     private func buildMenuOverlayContent(into page: SKNode, center: CGPoint) {
         switch currentMenuOverlayPage {
         case .history:
             buildHistoryContent(into: page, center: center)
+        case .achievements:
+            buildAchievementsContent(into: page, center: center)
         case .settings:
             buildSettingsContent(into: page, center: center)
         case .about:
@@ -1138,7 +1252,7 @@ final class GameScene: SKScene {
             name: NodeName.soundToggleButton,
             emphasized: !audioManager.muted
         )
-        soundRow.position = CGPoint(x: center.x, y: center.y + 44)
+        soundRow.position = CGPoint(x: center.x, y: center.y + 58)
         page.addChild(soundRow)
 
         let privacyRow = makeSettingsRow(
@@ -1146,28 +1260,102 @@ final class GameScene: SKScene {
             detail: "本地数据与 Game Center",
             name: NodeName.privacyButton
         )
-        privacyRow.position = CGPoint(x: center.x, y: center.y - 12)
+        privacyRow.position = CGPoint(x: center.x, y: center.y)
         page.addChild(privacyRow)
     }
 
     private func buildHistoryContent(into page: SKNode, center: CGPoint) {
         let snapshot = statsStore.snapshot()
+        let rowSpacing: CGFloat = 62
+        let footerTopY = frame.minY + max(view?.safeAreaInsets.bottom ?? 24, 24) + 168
+        let summaryY = center.y + 104
+        let listStartY = summaryY - 78
+        let availableListHeight = max(0, listStartY - (footerTopY + 36))
+        let visibleRecordCount = min(
+            snapshot.recentGames.count,
+            max(2, min(5, Int(availableListHeight / rowSpacing) + 1))
+        )
+
         let summary = makeStatsSummary(snapshot: snapshot)
-        summary.position = CGPoint(x: center.x, y: center.y + 52)
+        summary.position = CGPoint(x: center.x, y: summaryY)
         page.addChild(summary)
 
         if snapshot.recentGames.isEmpty {
             let emptyLabel = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
             emptyLabel.text = "还没有历史记录"
-            emptyLabel.position = CGPoint(x: center.x, y: center.y - 28)
+            emptyLabel.position = CGPoint(x: center.x, y: listStartY - 18)
             page.addChild(emptyLabel)
         } else {
-            for (index, game) in snapshot.recentGames.prefix(3).enumerated() {
+            for (index, game) in snapshot.recentGames.prefix(visibleRecordCount).enumerated() {
                 let row = makeHistoryRow(game: game, rank: index + 1)
-                row.position = CGPoint(x: center.x, y: center.y + 4 - CGFloat(index) * 39)
+                row.position = CGPoint(x: center.x, y: listStartY - CGFloat(index) * rowSpacing)
                 page.addChild(row)
             }
         }
+    }
+
+    private func buildAchievementsContent(into page: SKNode, center: CGPoint) {
+        let progress = gameCenterService.progressList()
+        let rowSpacing: CGFloat = 39
+        let topY = center.y + 132
+
+        for (index, item) in progress.enumerated() {
+            let row = makeAchievementRow(progress: item)
+            row.position = CGPoint(x: center.x, y: topY - CGFloat(index) * rowSpacing)
+            page.addChild(row)
+        }
+    }
+
+    private func makeAchievementRow(progress: AchievementProgress) -> SKShapeNode {
+        let isUnlocked = progress.unlockedAt != nil
+        let row = SKShapeNode(rectOf: CGSize(width: 292, height: 36), cornerRadius: 14)
+        row.fillColor = isUnlocked
+            ? DesignSystem.Colors.progressFill.withAlphaComponent(0.16)
+            : UIColor.white.withAlphaComponent(0.52)
+        row.strokeColor = isUnlocked
+            ? DesignSystem.Colors.progressFill.withAlphaComponent(0.34)
+            : DesignSystem.Colors.cardStroke
+        row.lineWidth = 1
+
+        let badge = SKShapeNode(circleOfRadius: 9)
+        badge.fillColor = isUnlocked ? DesignSystem.Colors.progressFill : DesignSystem.Colors.buttonSecondaryBackground
+        badge.strokeColor = UIColor.white.withAlphaComponent(0.42)
+        badge.lineWidth = 1
+        badge.position = CGPoint(x: -128, y: 0)
+        row.addChild(badge)
+
+        let badgeLabel = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: isUnlocked ? .white : DesignSystem.Colors.textDark)
+        badgeLabel.text = isUnlocked ? "✓" : "•"
+        badgeLabel.position = CGPoint(x: 0, y: 0)
+        badge.addChild(badgeLabel)
+
+        let title = makeLabel(font: DesignSystem.Fonts.historyRowTitleFont(), color: DesignSystem.Colors.textDark)
+        title.fontSize = 15
+        title.horizontalAlignmentMode = .left
+        title.text = progress.definition.title
+        title.position = CGPoint(x: -112, y: 7)
+        row.addChild(title)
+
+        let detail = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
+        detail.fontSize = 11
+        detail.alpha = 0.64
+        detail.horizontalAlignmentMode = .left
+        detail.text = progress.definition.detail
+        detail.position = CGPoint(x: -112, y: -10)
+        row.addChild(detail)
+
+        let state = makeLabel(font: DesignSystem.Fonts.hudSmallFont(), color: DesignSystem.Colors.textDark)
+        state.horizontalAlignmentMode = .right
+        state.alpha = isUnlocked ? 0.82 : 0.54
+        if let unlockedAt = progress.unlockedAt {
+            state.text = achievementDateFormatter.string(from: unlockedAt)
+        } else {
+            state.text = "未完成"
+        }
+        state.position = CGPoint(x: 132, y: -1)
+        row.addChild(state)
+
+        return row
     }
 
     private func buildAboutPrivacyContent(into page: SKNode, center: CGPoint) {
@@ -1182,7 +1370,7 @@ final class GameScene: SKScene {
             let label = makeLabel(font: DesignSystem.Fonts.historyRowBodyFont(), color: DesignSystem.Colors.textDark)
             label.horizontalAlignmentMode = .left
             label.text = line
-            label.position = CGPoint(x: center.x - 132, y: center.y + 54 - CGFloat(index) * 34)
+            label.position = CGPoint(x: center.x - 132, y: center.y + 70 - CGFloat(index) * 38)
             page.addChild(label)
         }
     }
@@ -1334,12 +1522,9 @@ final class GameScene: SKScene {
             switch candidate.name {
             case NodeName.menuHudButton:
                 audioManager.playButton()
+                guard scenePhase == .playing else { return }
                 currentMenuOverlayPage = .settings
                 pushOverlay(phase: .menu)
-                return
-            case NodeName.gameOverHistoryButton:
-                audioManager.playButton()
-                pushOverlay(phase: .history)
                 return
             case NodeName.restartButton:
                 audioManager.playButton()
@@ -1470,14 +1655,31 @@ final class GameScene: SKScene {
     }
 
     private func makeHUDCard(size: CGSize) -> SKShapeNode {
-        let card = SKShapeNode(rectOf: size, cornerRadius: 20)
+        let cornerRadius = min(20, size.height * 0.24)
+        let card = SKShapeNode(rectOf: size, cornerRadius: cornerRadius)
         card.fillColor = DesignSystem.Colors.cardBackground.withAlphaComponent(0.82)
         card.strokeColor = DesignSystem.Colors.cardStroke
         card.lineWidth = 1
         card.zPosition = 29
 
-        let shadow = SKShapeNode(rectOf: size, cornerRadius: 20)
+        let shadow = SKShapeNode(rectOf: size, cornerRadius: cornerRadius)
         shadow.fillColor = UIColor.black.withAlphaComponent(0.08)
+        shadow.strokeColor = .clear
+        shadow.position = CGPoint(x: 0, y: -5)
+        shadow.zPosition = -1
+        card.addChild(shadow)
+
+        return card
+    }
+
+    private func makeSurfaceCard(size: CGSize) -> SKShapeNode {
+        let card = SKShapeNode(rectOf: size, cornerRadius: 24)
+        card.fillColor = DesignSystem.Colors.cardBackground
+        card.strokeColor = DesignSystem.Colors.cardStroke
+        card.lineWidth = 1
+
+        let shadow = SKShapeNode(rectOf: size, cornerRadius: 24)
+        shadow.fillColor = UIColor.black.withAlphaComponent(0.07)
         shadow.strokeColor = .clear
         shadow.position = CGPoint(x: 0, y: -5)
         shadow.zPosition = -1
@@ -1547,12 +1749,14 @@ private enum ScenePhase {
 
 private enum MenuOverlayPage: Int, CaseIterable {
     case history
+    case achievements
     case settings
     case about
 
     var title: String {
         switch self {
         case .history: return "历史记录"
+        case .achievements: return "成就"
         case .settings: return "设置"
         case .about: return "关于/隐私"
         }

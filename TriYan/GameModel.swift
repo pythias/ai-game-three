@@ -56,6 +56,10 @@ final class GameModel {
         cells.compactMap { $0?.value }.max() ?? 0
     }
 
+    var boardSnapshot: [Int] {
+        cells.map { $0?.value ?? 0 }
+    }
+
     func threesStyleResult() -> Int {
         let maxValue = cells.compactMap { $0?.value }.max() ?? 0
         guard maxValue >= 3 else { return 0 }

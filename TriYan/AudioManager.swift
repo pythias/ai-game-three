@@ -1,14 +1,20 @@
 import AVFoundation
 import AudioToolbox
+import QuartzCore
 import SpriteKit
 
 final class AudioManager {
     static let shared = AudioManager()
 
+    private let soundFolder = "SFX"
+
     private var bgMusicPlayer: AVAudioPlayer?
+    private var swipePlayer: AVAudioPlayer?
+    private var lastSwipeFeedbackAt: CFTimeInterval = 0
     private var soundIDs: [String: SystemSoundID] = [:]
     private var isMuted: Bool
     private let mutedKey = "settings.audioMuted"
+    private let swipeFeedbackInterval: CFTimeInterval = 0.12
 
     private init() {
         isMuted = UserDefaults.standard.bool(forKey: mutedKey)
@@ -48,37 +54,36 @@ final class AudioManager {
 
     func playMove() {
         guard !isMuted else { return }
-        playSound("move", ext: "wav")
+        playSwipeFeedback(volume: 0.18)
     }
 
     func playMerge() {
         guard !isMuted else { return }
-        playSound("merge", ext: "wav")
+        playRandomSound(["merge_0", "merge_1", "merge_2", "merge_3", "merge_4", "merge_5"], ext: "wav")
     }
 
     func playBigMerge() {
         guard !isMuted else { return }
-        playSound("combo", ext: "wav")
+        playRandomSound(["merge_3", "merge_4", "merge_5"], ext: "wav")
     }
 
     func playSpawn() {
-        guard !isMuted else { return }
-        playSound("spawn", ext: "wav")
+        return
     }
 
     func playGameOver() {
         guard !isMuted else { return }
-        playSound("gameover", ext: "wav")
+        playSound("game_over", ext: "wav")
     }
 
     func playButton() {
         guard !isMuted else { return }
-        playSound("move", ext: "wav", volume: 0.35)
+        playSwipeFeedback(volume: 0.12)
     }
 
     func playCombo() {
         guard !isMuted else { return }
-        playSound("combo", ext: "wav")
+        playBigMerge()
     }
 
     // MARK: - Mute
@@ -99,18 +104,20 @@ final class AudioManager {
 
     private func preloadSoundEffects() {
         [
-            ("move", "wav"),
-            ("merge", "wav"),
-            ("combo", "wav"),
-            ("spawn", "wav"),
-            ("gameover", "wav")
-        ].forEach { name, ext in
-            preloadSound(name, ext: ext)
+            "game_over",
+            "merge_0",
+            "merge_1",
+            "merge_2",
+            "merge_3",
+            "merge_4",
+            "merge_5"
+        ].forEach { name in
+            preloadSound(name, ext: "wav")
         }
     }
 
     private func preloadSound(_ name: String, ext: String) {
-        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else { return }
+        guard let url = bundleURL(for: name, ext: ext) else { return }
 
         let key = soundKey(name, ext: ext)
         var soundID: SystemSoundID = 0
@@ -122,20 +129,53 @@ final class AudioManager {
         }
     }
 
-    private func playSound(_ name: String, ext: String, volume: Float = 0.6) {
+    private func playSwipeFeedback(volume: Float) {
+        let now = CACurrentMediaTime()
+        guard now - lastSwipeFeedbackAt >= swipeFeedbackInterval else { return }
+        guard let player = swipePlayer ?? makeSwipePlayer() else { return }
+        player.volume = volume
+        player.currentTime = 0
+        player.play()
+        swipePlayer = player
+        lastSwipeFeedbackAt = now
+    }
+
+    private func makeSwipePlayer() -> AVAudioPlayer? {
+        guard let url = bundleURL(for: "swipe", ext: "wav") else { return nil }
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.prepareToPlay()
+            return player
+        } catch {
+            print("AudioManager: failed to load swipe - \(error)")
+            return nil
+        }
+    }
+
+    private func playSound(_ name: String, ext: String) {
         let key = soundKey(name, ext: ext)
         guard let soundID = soundIDs[key] else { return }
         AudioServicesPlaySystemSound(soundID)
+    }
+
+    private func playRandomSound(_ names: [String], ext: String) {
+        guard let name = names.randomElement() else { return }
+        playSound(name, ext: ext)
     }
 
     private func soundKey(_ name: String, ext: String) -> String {
         "\(name).\(ext)"
     }
 
+    private func bundleURL(for name: String, ext: String) -> URL? {
+        Bundle.main.url(forResource: name, withExtension: ext, subdirectory: soundFolder)
+            ?? Bundle.main.url(forResource: name, withExtension: ext)
+    }
+
     func playSoundViaSKAction(_ name: String, ext: String, in scene: SKScene) {
         guard !isMuted else { return }
-        guard Bundle.main.url(forResource: name, withExtension: ext) != nil else { return }
-        let action = SKAction.playSoundFileNamed("\(name).\(ext)", waitForCompletion: false)
+        guard bundleURL(for: name, ext: ext) != nil else { return }
+        let action = SKAction.playSoundFileNamed("SFX/\(name).\(ext)", waitForCompletion: false)
         scene.run(action)
     }
 }

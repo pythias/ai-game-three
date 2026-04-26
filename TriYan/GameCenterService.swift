@@ -5,6 +5,12 @@ import UIKit
 struct AchievementUnlock {
     let identifier: String
     let title: String
+    let unlockedAt: Date
+}
+
+struct AchievementProgress {
+    let definition: AchievementDefinition
+    let unlockedAt: Date?
 }
 
 final class GameCenterService {
@@ -13,9 +19,16 @@ final class GameCenterService {
     private let leaderboardID = "com.xiaodao.triyan.highscore"
     private let defaults = UserDefaults.standard
     private let unlockedAchievementsKey = "achievements.unlockedIdentifiers"
+    private let unlockedAchievementDatesKey = "achievements.unlockedDates"
     private(set) var isAuthenticated = false
 
     private init() {}
+
+    func syncHistoricalAchievements(score: Int, maxTile: Int, gamesPlayed: Int) {
+        let unlocks = reportAchievements(score: score, maxTile: maxTile, gamesPlayed: gamesPlayed)
+        guard !unlocks.isEmpty else { return }
+        print("Synced historical achievements: \(unlocks.map(\.identifier).joined(separator: ", "))")
+    }
 
     func authenticateIfNeeded() {
         let localPlayer = GKLocalPlayer.local
@@ -50,20 +63,24 @@ final class GameCenterService {
 
     func reportAchievements(score: Int, maxTile: Int, gamesPlayed: Int) -> [AchievementUnlock] {
         let earned = achievementDefinitions.filter { definition in
-            score >= definition.requiredScore
-                && maxTile >= definition.requiredMaxTile
-                && gamesPlayed >= definition.requiredGamesPlayed
+            definition.isEarned(score: score, maxTile: maxTile, gamesPlayed: gamesPlayed)
         }
 
         var unlocked = Set(defaults.stringArray(forKey: unlockedAchievementsKey) ?? [])
+        var unlockedDates = migratedUnlockedDateDictionary()
+        let unlockedAt = Date()
         let newUnlocks = earned
             .filter { !unlocked.contains($0.identifier) }
-            .map { AchievementUnlock(identifier: $0.identifier, title: $0.title) }
+            .map { AchievementUnlock(identifier: $0.identifier, title: $0.title, unlockedAt: unlockedAt) }
 
         guard !newUnlocks.isEmpty else { return [] }
 
-        newUnlocks.forEach { unlocked.insert($0.identifier) }
+        newUnlocks.forEach { unlock in
+            unlocked.insert(unlock.identifier)
+            unlockedDates[unlock.identifier] = unlock.unlockedAt.timeIntervalSince1970
+        }
         defaults.set(Array(unlocked), forKey: unlockedAchievementsKey)
+        defaults.set(unlockedDates, forKey: unlockedAchievementDatesKey)
 
         guard isAuthenticated else { return newUnlocks }
 
@@ -81,6 +98,36 @@ final class GameCenterService {
         }
 
         return newUnlocks
+    }
+
+    func progressList() -> [AchievementProgress] {
+        let unlockedDates = migratedUnlockedDateDictionary()
+        return achievementDefinitions.map { definition in
+            let unlockedAt = unlockedDates[definition.identifier].map { Date(timeIntervalSince1970: $0) }
+            return AchievementProgress(definition: definition, unlockedAt: unlockedAt)
+        }
+    }
+
+    func title(for identifier: String) -> String {
+        achievementDefinitions.first { $0.identifier == identifier }?.title ?? "未知成就"
+    }
+
+    private func unlockedDateDictionary() -> [String: TimeInterval] {
+        defaults.dictionary(forKey: unlockedAchievementDatesKey) as? [String: TimeInterval] ?? [:]
+    }
+
+    private func migratedUnlockedDateDictionary() -> [String: TimeInterval] {
+        let unlocked = Set(defaults.stringArray(forKey: unlockedAchievementsKey) ?? [])
+        var dates = unlockedDateDictionary()
+        let missingDateIDs = unlocked.filter { dates[$0] == nil }
+        guard !missingDateIDs.isEmpty else { return dates }
+
+        let migrationDate = Date().timeIntervalSince1970
+        for identifier in missingDateIDs {
+            dates[identifier] = migrationDate
+        }
+        defaults.set(dates, forKey: unlockedAchievementDatesKey)
+        return dates
     }
 
     private static func topViewController(
@@ -101,18 +148,26 @@ final class GameCenterService {
     }
 }
 
-private struct AchievementDefinition {
+struct AchievementDefinition {
     let identifier: String
     let title: String
+    let detail: String
     let requiredScore: Int
     let requiredMaxTile: Int
     let requiredGamesPlayed: Int
+
+    func isEarned(score: Int, maxTile: Int, gamesPlayed: Int) -> Bool {
+        score >= requiredScore
+            && maxTile >= requiredMaxTile
+            && gamesPlayed >= requiredGamesPlayed
+    }
 }
 
 private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.first_game",
         title: "完成首局",
+        detail: "完成 1 局游戏",
         requiredScore: 0,
         requiredMaxTile: 0,
         requiredGamesPlayed: 1
@@ -120,6 +175,7 @@ private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.tile_48",
         title: "合成 48",
+        detail: "局内合成 48",
         requiredScore: 0,
         requiredMaxTile: 48,
         requiredGamesPlayed: 0
@@ -127,6 +183,7 @@ private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.tile_96",
         title: "合成 96",
+        detail: "局内合成 96",
         requiredScore: 0,
         requiredMaxTile: 96,
         requiredGamesPlayed: 0
@@ -134,6 +191,7 @@ private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.tile_192",
         title: "合成 192",
+        detail: "局内合成 192",
         requiredScore: 0,
         requiredMaxTile: 192,
         requiredGamesPlayed: 0
@@ -141,6 +199,7 @@ private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.score_100",
         title: "百分上手",
+        detail: "单局分数达到 100",
         requiredScore: 100,
         requiredMaxTile: 0,
         requiredGamesPlayed: 0
@@ -148,6 +207,7 @@ private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.score_500",
         title: "五百分突破",
+        detail: "单局分数达到 500",
         requiredScore: 500,
         requiredMaxTile: 0,
         requiredGamesPlayed: 0
@@ -155,6 +215,7 @@ private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.score_1000",
         title: "千分局",
+        detail: "单局分数达到 1000",
         requiredScore: 1000,
         requiredMaxTile: 0,
         requiredGamesPlayed: 0
@@ -162,6 +223,7 @@ private let achievementDefinitions: [AchievementDefinition] = [
     AchievementDefinition(
         identifier: "com.xiaodao.triyan.achievement.games_10",
         title: "十局练习",
+        detail: "累计完成 10 局",
         requiredScore: 0,
         requiredMaxTile: 0,
         requiredGamesPlayed: 10
