@@ -35,3 +35,7 @@ fastlane/test_output/
 
 # Python
 __pycache__/
+
+# Superpowers
+.superpowers/
+docs/superpowers/
