@@ -4,72 +4,75 @@ import SpriteKit
 enum DesignSystem {
     // MARK: - Colors
     enum Colors {
-        static let emptyCell = UIColor(hex: "#D5C3AD")
-        static let background = UIColor(hex: "#F5EBDD")
-        static let backgroundDeep = UIColor(hex: "#DDC4A8")
-        static let backgroundGlow = UIColor(hex: "#FFF4DF")
-        static let textDark = UIColor(hex: "#493F37")
+        static let emptyCell = UIColor(hex: "#245FC6")
+        static let background = UIColor(hex: "#126FE8")
+        static let backgroundDeep = UIColor(hex: "#2E24C8")
+        static let backgroundGlow = UIColor(hex: "#27C7FF")
+        static let textDark = UIColor.white
         static let textLight = UIColor.white
-        static let progressFill = UIColor(hex: "#1F7A68")
-        static let overlayScrim = UIColor.black.withAlphaComponent(0.28)
-        static let cardBackground = UIColor(hex: "#FFF8EE")
-        static let cardStroke = UIColor.white.withAlphaComponent(0.72)
-        static let boardBackground = UIColor(hex: "#B99E82")
-        static let buttonBackground = UIColor(hex: "#D86E3E")
-        static let buttonSecondaryBackground = UIColor(hex: "#F1DBC4")
-        static let achievementBackground = UIColor(hex: "#1F7A68")
+        static let progressFill = UIColor(hex: "#FFE348")
+        static let overlayScrim = UIColor.black.withAlphaComponent(0.32)
+        static let cardBackground = UIColor(hex: "#186DDE")
+        static let cardStroke = UIColor.white.withAlphaComponent(0.46)
+        static let boardBackground = UIColor(hex: "#2EA8FF")
+        static let buttonBackground = UIColor(hex: "#1598F6")
+        static let buttonSecondaryBackground = UIColor(hex: "#FFC319")
+        static let achievementBackground = UIColor(hex: "#174DB8")
+        static let coinGold = UIColor(hex: "#FFC21D")
+        static let badgeRed = UIColor(hex: "#F24835")
 
         static func tileBackground(for value: Int) -> UIColor {
             switch value {
-            case 1: return UIColor(hex: "#FFFDF7")
-            case 2: return UIColor(hex: "#E85C4A")
-            case 3: return UIColor(hex: "#F4A6A0")
-            case 6: return UIColor(hex: "#E77E45")
-            case 12: return UIColor(hex: "#E5B64A")
-            case 24: return UIColor(hex: "#C89D3F")
-            case 48: return UIColor(hex: "#A8A941")
-            case 96: return UIColor(hex: "#6AA85D")
-            case 192: return UIColor(hex: "#36956F")
-            case 384: return UIColor(hex: "#27868A")
+            case 1: return UIColor(hex: "#5AA8FF")
+            case 2: return UIColor(hex: "#68D818")
+            case 3: return UIColor(hex: "#42C4AF")
+            case 6: return UIColor(hex: "#F58A00")
+            case 12: return UIColor(hex: "#8D4EE8")
+            case 24: return UIColor(hex: "#FFD723")
+            case 48: return UIColor(hex: "#EF4E39")
+            case 96: return UIColor(hex: "#2BB5F4")
+            case 192: return UIColor(hex: "#20A46D")
+            case 384: return UIColor(hex: "#C33AE0")
             default:
-                if value >= 768 { return UIColor(hex: "#2D76A5") }
-                return UIColor(hex: "#BBA88F")
+                if value >= 768 { return UIColor(hex: "#243FBA") }
+                return UIColor(hex: "#FFD64D")
             }
         }
 
         static func tileHighlight(for value: Int) -> UIColor {
             switch value {
-            case 1: return UIColor(hex: "#FFFFFF")
-            case 2: return UIColor(hex: "#FF8A78")
-            case 3: return UIColor(hex: "#FFD2CC")
-            case 6: return UIColor(hex: "#FFAA68")
-            case 12: return UIColor(hex: "#F7D46B")
-            case 24: return UIColor(hex: "#E7C35D")
-            case 48: return UIColor(hex: "#CCCF66")
-            case 96: return UIColor(hex: "#91C980")
-            case 192: return UIColor(hex: "#5DBF91")
-            case 384: return UIColor(hex: "#4DB0B3")
+            case 1: return UIColor(hex: "#9FD0FF")
+            case 2: return UIColor(hex: "#B8F64F")
+            case 3: return UIColor(hex: "#76E7DA")
+            case 6: return UIColor(hex: "#FFB329")
+            case 12: return UIColor(hex: "#B986FF")
+            case 24: return UIColor(hex: "#FFF36C")
+            case 48: return UIColor(hex: "#FF7A62")
+            case 96: return UIColor(hex: "#76D8FF")
+            case 192: return UIColor(hex: "#5BE09D")
+            case 384: return UIColor(hex: "#E277FF")
             default:
-                if value >= 768 { return UIColor(hex: "#5DA9D0") }
-                return UIColor(hex: "#D1C2AA")
+                if value >= 768 { return UIColor(hex: "#6078FF") }
+                return UIColor(hex: "#FFF16C")
             }
         }
 
         static func tileText(for value: Int) -> UIColor {
             switch value {
-            case 1: return UIColor(hex: "#9A8C7D")
-            case 12, 24: return UIColor(hex: "#4F453B")
-            default: return .white
+            case 6, 24, 48:
+                return .white
+            default:
+                return UIColor(hex: "#F7FFF9")
             }
         }
     }
 
     // MARK: - Layout
     enum Layout {
-        static let gridSpacing: CGFloat = 10
-        static let cellCornerRadius: CGFloat = 14
-        static let tileCornerRadius: CGFloat = 14
-        static let gridWidthRatio: CGFloat = 0.88
+        static let gridSpacing: CGFloat = 0
+        static let cellCornerRadius: CGFloat = 0
+        static let tileCornerRadius: CGFloat = 0
+        static let gridWidthRatio: CGFloat = 0.9
         static let screenPadding: CGFloat = 20
         static let hudTopInset: CGFloat = 12
         static let hudTitleWidth: CGFloat = 88
@@ -83,16 +86,16 @@ enum DesignSystem {
         static let menuCardSize = CGSize(width: 296, height: 286)
         static let settingsCardSize = CGSize(width: 336, height: 338)
         static let infoCardSize = CGSize(width: 336, height: 376)
-        static let titleCardSize = CGSize(width: 122, height: 74)
-        static let nextCardSize = CGSize(width: 112, height: 74)
-        static let scoreCardSize = CGSize(width: 112, height: 74)
+        static let titleCardSize = CGSize(width: 142, height: 52)
+        static let nextCardSize = CGSize(width: 154, height: 62)
+        static let scoreCardSize = CGSize(width: 230, height: 82)
 
         static func gridSize(in view: SKView) -> CGFloat {
             view.bounds.width * gridWidthRatio
         }
 
         static func cellSize(gridSize: CGFloat) -> CGFloat {
-            (gridSize - 3 * gridSpacing) / 4
+            gridSize / 5
         }
     }
 

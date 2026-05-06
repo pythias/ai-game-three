@@ -1,15 +1,34 @@
 import Foundation
 
-enum MoveDirection {
-    case up
-    case down
-    case left
-    case right
+enum MoveDirection: CaseIterable {
+    case east
+    case west
+    case northeast
+    case southwest
+    case northwest
+    case southeast
+
+    var axialDelta: (q: Int, r: Int) {
+        switch self {
+        case .east: return (1, 0)
+        case .west: return (-1, 0)
+        case .northeast: return (1, -1)
+        case .southwest: return (-1, 1)
+        case .northwest: return (0, -1)
+        case .southeast: return (0, 1)
+        }
+    }
 }
 
 struct GridPosition: Hashable {
+    /// Axial r coordinate.
     let row: Int
+    /// Axial q coordinate.
     let col: Int
+
+    var q: Int { col }
+    var r: Int { row }
+    var s: Int { -q - r }
 }
 
 struct TileMovement {
@@ -32,17 +51,32 @@ struct MoveResult {
 }
 
 final class GameModel {
-    static let boardSize = 4
+    static let boardRadius = 2
+    static let boardCellCount = 19
+
+    static let visualPositions: [GridPosition] = {
+        var positions: [GridPosition] = []
+        for r in -boardRadius...boardRadius {
+            let minQ = max(-boardRadius, -r - boardRadius)
+            let maxQ = min(boardRadius, -r + boardRadius)
+            for q in minQ...maxQ {
+                positions.append(GridPosition(row: r, col: q))
+            }
+        }
+        return positions
+    }()
+
+    private static let validPositions = Set(visualPositions)
 
     private(set) var score = 0
-    private var cells: [Tile?] = Array(repeating: nil, count: boardSize * boardSize)
+    private var cells: [GridPosition: Tile] = [:]
 
     var board: [Tile?] {
-        cells
+        Self.visualPositions.map { cells[$0] }
     }
 
     var emptyPositions: [GridPosition] {
-        allPositions().filter { tile(at: $0) == nil }
+        Self.visualPositions.filter { cells[$0] == nil }
     }
 
     var isGameOver: Bool {
@@ -53,23 +87,23 @@ final class GameModel {
     }
 
     var maxTileValue: Int {
-        cells.compactMap { $0?.value }.max() ?? 0
+        cells.values.map(\.value).max() ?? 0
     }
 
     var boardSnapshot: [Int] {
-        cells.map { $0?.value ?? 0 }
+        Self.visualPositions.map { cells[$0]?.value ?? 0 }
     }
 
     func threesStyleResult() -> Int {
-        let maxValue = cells.compactMap { $0?.value }.max() ?? 0
+        let maxValue = cells.values.map(\.value).max() ?? 0
         guard maxValue >= 3 else { return 0 }
 
         var result = 0
         var value = 3
 
         while value <= maxValue {
-            let count = cells.reduce(0) { partial, tile in
-                partial + ((tile?.value == value) ? 1 : 0)
+            let count = cells.values.reduce(0) { partial, tile in
+                partial + (tile.value == value ? 1 : 0)
             }
             if count > 0 {
                 result += count * scoreForTileValue(value)
@@ -81,14 +115,14 @@ final class GameModel {
     }
 
     func tileHistogramFromThree() -> [(value: Int, count: Int)] {
-        let maxValue = cells.compactMap { $0?.value }.max() ?? 0
+        let maxValue = cells.values.map(\.value).max() ?? 0
         guard maxValue >= 3 else { return [] }
 
         var histogram: [(value: Int, count: Int)] = []
         var value = 3
         while value <= maxValue {
-            let count = cells.reduce(0) { partial, tile in
-                partial + ((tile?.value == value) ? 1 : 0)
+            let count = cells.values.reduce(0) { partial, tile in
+                partial + (tile.value == value ? 1 : 0)
             }
             histogram.append((value: value, count: count))
             value *= 2
@@ -109,18 +143,18 @@ final class GameModel {
 
     func reset() {
         score = 0
-        cells = Array(repeating: nil, count: Self.boardSize * Self.boardSize)
+        cells.removeAll(keepingCapacity: true)
     }
 
     func tile(at position: GridPosition) -> Tile? {
         guard isValid(position) else { return nil }
-        return cells[index(for: position)]
+        return cells[position]
     }
 
     @discardableResult
     func place(_ newTile: Tile, at position: GridPosition) -> Bool {
-        guard isValid(position), tile(at: position) == nil else { return false }
-        cells[index(for: position)] = newTile
+        guard isValid(position), cells[position] == nil else { return false }
+        cells[position] = newTile
         return true
     }
 
@@ -129,141 +163,94 @@ final class GameModel {
         var movements: [TileMovement] = []
         var merges: [MergeEvent] = []
         var didMove = false
+        var scoreDelta = 0
+        var mergedDestinations: Set<GridPosition> = []
 
-        for from in traversalOrder(for: direction) {
-            guard let sourceTile = tileFrom(board: working, at: from) else { continue }
-            let to = steppedPosition(from: from, direction: direction)
-            guard isValid(to) else { continue }
+        for source in traversalOrder(for: direction) {
+            guard let sourceTile = working[source] else { continue }
+            let destination = Self.neighbor(from: source, direction: direction)
+            guard isValid(destination) else { continue }
 
-            if let targetTile = tileFrom(board: working, at: to) {
-                guard let mergedTile = Tile.mergedValue(sourceTile, targetTile) else { continue }
-                setTileIn(board: &working, position: from, tile: nil)
-                setTileIn(board: &working, position: to, tile: mergedTile)
-                movements.append(TileMovement(from: from, to: to, value: sourceTile.value, consumedInMerge: true))
-                movements.append(TileMovement(from: to, to: to, value: targetTile.value, consumedInMerge: true))
-                merges.append(MergeEvent(at: to, resultValue: mergedTile.value))
-                score += mergedTile.value
+            if let targetTile = working[destination] {
+                guard !mergedDestinations.contains(destination),
+                      let mergedTile = Tile.mergedValue(sourceTile, targetTile) else { continue }
+                working[source] = nil
+                working[destination] = mergedTile
+                movements.append(TileMovement(from: source, to: destination, value: sourceTile.value, consumedInMerge: true))
+                movements.append(TileMovement(from: destination, to: destination, value: targetTile.value, consumedInMerge: true))
+                merges.append(MergeEvent(at: destination, resultValue: mergedTile.value))
+                mergedDestinations.insert(destination)
+                scoreDelta += mergedTile.value
                 didMove = true
             } else {
-                setTileIn(board: &working, position: from, tile: nil)
-                setTileIn(board: &working, position: to, tile: sourceTile)
-                movements.append(TileMovement(from: from, to: to, value: sourceTile.value, consumedInMerge: false))
+                working[source] = nil
+                working[destination] = sourceTile
+                movements.append(TileMovement(from: source, to: destination, value: sourceTile.value, consumedInMerge: false))
                 didMove = true
             }
         }
 
         if didMove && commit {
             cells = working
+            score += scoreDelta
         }
 
         return MoveResult(
             didMove: didMove,
             movements: didMove ? movements : [],
             merges: didMove ? merges : [],
-            spawnCandidates: didMove ? spawnCandidates(for: direction) : []
+            spawnCandidates: didMove ? spawnCandidates(for: direction, board: working) : []
         )
     }
 
-    private func traversalOrder(for direction: MoveDirection) -> [GridPosition] {
-        let n = Self.boardSize
-        switch direction {
-        case .left:
-            return (0..<n).flatMap { row in
-                (1..<n).map { col in GridPosition(row: row, col: col) }
-            }
-        case .right:
-            return (0..<n).flatMap { row in
-                (0..<(n - 1)).reversed().map { col in GridPosition(row: row, col: col) }
-            }
-        case .up:
-            return (1..<n).flatMap { row in
-                (0..<n).map { col in GridPosition(row: row, col: col) }
-            }
-        case .down:
-            return (0..<(n - 1)).reversed().flatMap { row in
-                (0..<n).map { col in GridPosition(row: row, col: col) }
-            }
-        }
+    static func isValid(_ position: GridPosition) -> Bool {
+        validPositions.contains(position)
     }
 
-    private func steppedPosition(from position: GridPosition, direction: MoveDirection) -> GridPosition {
-        switch direction {
-        case .left:
-            return GridPosition(row: position.row, col: position.col - 1)
-        case .right:
-            return GridPosition(row: position.row, col: position.col + 1)
-        case .up:
-            return GridPosition(row: position.row - 1, col: position.col)
-        case .down:
-            return GridPosition(row: position.row + 1, col: position.col)
-        }
-    }
-
-    private func spawnCandidates(for direction: MoveDirection) -> [GridPosition] {
-        let n = Self.boardSize
-        switch direction {
-        case .left:
-            return (0..<n).compactMap { row in
-                let pos = GridPosition(row: row, col: n - 1)
-                return tile(at: pos) == nil ? pos : nil
-            }
-        case .right:
-            return (0..<n).compactMap { row in
-                let pos = GridPosition(row: row, col: 0)
-                return tile(at: pos) == nil ? pos : nil
-            }
-        case .up:
-            return (0..<n).compactMap { col in
-                let pos = GridPosition(row: n - 1, col: col)
-                return tile(at: pos) == nil ? pos : nil
-            }
-        case .down:
-            return (0..<n).compactMap { col in
-                let pos = GridPosition(row: 0, col: col)
-                return tile(at: pos) == nil ? pos : nil
-            }
-        }
-    }
-
-    private func allPositions() -> [GridPosition] {
-        (0..<Self.boardSize).flatMap { row in
-            (0..<Self.boardSize).map { col in
-                GridPosition(row: row, col: col)
-            }
-        }
-    }
-
-    private func tileFrom(board: [Tile?], at position: GridPosition) -> Tile? {
-        guard isValid(position) else { return nil }
-        return board[index(for: position)]
-    }
-
-    private func setTileIn(board: inout [Tile?], position: GridPosition, tile: Tile?) {
-        guard isValid(position) else { return }
-        board[index(for: position)] = tile
-    }
-
-    private func index(for position: GridPosition) -> Int {
-        position.row * Self.boardSize + position.col
+    static func neighbor(from position: GridPosition, direction: MoveDirection) -> GridPosition {
+        let delta = direction.axialDelta
+        return GridPosition(row: position.r + delta.r, col: position.q + delta.q)
     }
 
     private func isValid(_ position: GridPosition) -> Bool {
-        (0..<Self.boardSize).contains(position.row) && (0..<Self.boardSize).contains(position.col)
+        Self.isValid(position)
+    }
+
+    private func traversalOrder(for direction: MoveDirection) -> [GridPosition] {
+        let delta = direction.axialDelta
+        return Self.visualPositions.sorted { lhs, rhs in
+            let lhsProjection = lhs.q * delta.q + lhs.r * delta.r
+            let rhsProjection = rhs.q * delta.q + rhs.r * delta.r
+            if lhsProjection != rhsProjection {
+                return lhsProjection > rhsProjection
+            }
+            if lhs.r != rhs.r {
+                return lhs.r < rhs.r
+            }
+            return lhs.q < rhs.q
+        }
+    }
+
+    private func spawnCandidates(for direction: MoveDirection, board: [GridPosition: Tile]) -> [GridPosition] {
+        let delta = direction.axialDelta
+        let oppositeEdge = Self.visualPositions.filter { position in
+            let behind = GridPosition(row: position.r - delta.r, col: position.q - delta.q)
+            return !isValid(behind) && board[position] == nil
+        }
+
+        if !oppositeEdge.isEmpty {
+            return oppositeEdge
+        }
+
+        return Self.visualPositions.filter { board[$0] == nil }
     }
 
     private func hasAvailableMerge() -> Bool {
-        for row in 0..<Self.boardSize {
-            for col in 0..<Self.boardSize {
-                let position = GridPosition(row: row, col: col)
-                guard let currentTile = tile(at: position) else { continue }
-
-                let right = GridPosition(row: row, col: col + 1)
-                if let rightTile = tile(at: right), Tile.canMerge(currentTile, rightTile) {
-                    return true
-                }
-
-                let down = GridPosition(row: row + 1, col: col)
-                if let downTile = tile(at: down), Tile.canMerge(currentTile, downTile) {
+        for position in Self.visualPositions {
+            guard let currentTile = tile(at: position) else { continue }
+            for direction in MoveDirection.allCases {
+                let neighbor = Self.neighbor(from: position, direction: direction)
+                if let neighborTile = tile(at: neighbor), Tile.canMerge(currentTile, neighborTile) {
                     return true
                 }
             }

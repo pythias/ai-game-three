@@ -1,7 +1,12 @@
 import UIKit
 
 enum SwipeDirection {
-    case up, down, left, right
+    case east
+    case west
+    case northeast
+    case southwest
+    case northwest
+    case southeast
 }
 
 final class InputController: NSObject {
@@ -46,10 +51,31 @@ final class InputController: NSObject {
         guard max(abs(dx), abs(dy)) >= threshold else { return }
 
         hasTriggeredSwipe = true
-        if abs(dx) > abs(dy) {
-            onSwipe?(dx > 0 ? .right : .left)
-        } else {
-            onSwipe?(dy > 0 ? .down : .up)
+        onSwipe?(nearestHexDirection(dx: dx, dy: dy))
+    }
+
+    private func nearestHexDirection(dx: CGFloat, dy: CGFloat) -> SwipeDirection {
+        let angle = atan2(-dy, dx)
+        let candidates: [(direction: SwipeDirection, angle: CGFloat)] = [
+            (.east, 0),
+            (.northeast, .pi / 3),
+            (.northwest, 2 * .pi / 3),
+            (.west, .pi),
+            (.southwest, -2 * .pi / 3),
+            (.southeast, -.pi / 3)
+        ]
+
+        return candidates.min { lhs, rhs in
+            angularDistance(angle, lhs.angle) < angularDistance(angle, rhs.angle)
+        }?.direction ?? .east
+    }
+
+    private func angularDistance(_ lhs: CGFloat, _ rhs: CGFloat) -> CGFloat {
+        let twoPi = CGFloat.pi * 2
+        var difference = abs(lhs - rhs).truncatingRemainder(dividingBy: twoPi)
+        if difference > .pi {
+            difference = twoPi - difference
         }
+        return difference
     }
 }

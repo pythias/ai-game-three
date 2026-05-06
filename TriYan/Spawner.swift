@@ -46,7 +46,8 @@ final class Spawner {
 
         // Determine spawn type: basic (1,2,3) or high value
         // Reduce high value chance when board is getting full
-        let boardFullness = 1.0 - (Double(emptyCount) / 16.0)  // 0 = empty, 1 = full
+        let boardCapacity = max(board.count, 1)
+        let boardFullness = 1.0 - (Double(emptyCount) / Double(boardCapacity))  // 0 = empty, 1 = full
         let basicSpawnChance = 0.85 + (boardFullness * 0.15)  // 85-100% basic tiles
 
         let roll = Double.random(in: 0...1)
