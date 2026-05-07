@@ -1345,7 +1345,6 @@ final class GameScene: SKScene {
     private func recordCurrentGameIfNeeded() -> [AchievementUnlock] {
         guard !didRecordCurrentGame else { return [] }
 
-        let previousBest = statsStore.bestScore()
         let completedGamesPlayed = statsStore.snapshot().gamesPlayed + 1
         let gameOverUnlocks = gameCenterService.reportAchievements(
             score: model.score,
@@ -1361,9 +1360,11 @@ final class GameScene: SKScene {
             unlockedAchievementIDs: currentGameAchievementIDs
         )
 
-        if model.score >= previousBest {
-            gameCenterService.submit(score: model.score)
-        }
+        let updatedStats = statsStore.snapshot()
+        gameCenterService.submitGameResult(
+            score: model.score,
+            lifetimeTileCounts: updatedStats.lifetimeHistogram
+        )
 
         didRecordCurrentGame = true
         return gameOverUnlocks
@@ -2029,7 +2030,7 @@ final class GameScene: SKScene {
         let progress = gameCenterService.progressList()
         let unlocked = progress.filter { $0.unlockedAt != nil }.count
         let topY = center.y + size.height / 2 - 46
-        let progressCard = makeAchievementProgressCard(unlocked: unlocked, total: max(progress.count, 48))
+        let progressCard = makeAchievementProgressCard(unlocked: unlocked, total: progress.count)
         progressCard.position = CGPoint(x: center.x, y: topY)
         page.addChild(progressCard)
 

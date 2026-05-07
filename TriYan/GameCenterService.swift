@@ -16,7 +16,9 @@ struct AchievementProgress {
 final class GameCenterService: NSObject, GKGameCenterControllerDelegate {
     static let shared = GameCenterService()
 
-    private let leaderboardID = "com.xiaodao.triyan.highscore"
+    private let highScoreLeaderboardID = "com.xiaodao.triyan.highscore"
+    private let tileLeaderboardPrefix = "com.xiaodao.triyan.tile"
+    private let leaderboardTileValues = [3, 6, 12, 24, 48, 96, 192, 384, 768, 1536, 3072, 6144, 12288, 24576]
     private let defaults = UserDefaults.standard
     private let unlockedAchievementsKey = "achievements.unlockedIdentifiers"
     private let unlockedAchievementDatesKey = "achievements.unlockedDates"
@@ -53,10 +55,31 @@ final class GameCenterService: NSObject, GKGameCenterControllerDelegate {
             score,
             context: 0,
             player: GKLocalPlayer.local,
-            leaderboardIDs: [leaderboardID]
+            leaderboardIDs: [highScoreLeaderboardID]
         ) { error in
             if let error {
                 print("Game Center score submit error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func submitGameResult(score: Int, lifetimeTileCounts: [(value: Int, count: Int)]) {
+        submit(score: score)
+
+        guard isAuthenticated else { return }
+        let countsByValue = Dictionary(uniqueKeysWithValues: lifetimeTileCounts)
+        for value in leaderboardTileValues {
+            let count = countsByValue[value] ?? 0
+            guard count > 0 else { continue }
+            GKLeaderboard.submitScore(
+                count,
+                context: Int(value),
+                player: GKLocalPlayer.local,
+                leaderboardIDs: [tileLeaderboardID(for: value)]
+            ) { error in
+                if let error {
+                    print("Game Center tile \(value) leaderboard submit error: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -117,7 +140,7 @@ final class GameCenterService: NSObject, GKGameCenterControllerDelegate {
     }
 
     func presentLeaderboard() {
-        presentGameCenter(viewState: .leaderboards, leaderboardIdentifier: leaderboardID)
+        presentGameCenter(viewState: .leaderboards, leaderboardIdentifier: highScoreLeaderboardID)
     }
 
     func presentAchievements() {
@@ -144,6 +167,10 @@ final class GameCenterService: NSObject, GKGameCenterControllerDelegate {
             controller.leaderboardIdentifier = leaderboardIdentifier
         }
         Self.topViewController()?.present(controller, animated: true)
+    }
+
+    private func tileLeaderboardID(for value: Int) -> String {
+        "\(tileLeaderboardPrefix).\(value).count"
     }
 
     private func unlockedDateDictionary() -> [String: TimeInterval] {
@@ -190,6 +217,22 @@ struct AchievementDefinition {
     let requiredMaxTile: Int
     let requiredGamesPlayed: Int
 
+    init(
+        identifier: String,
+        title: String,
+        detail: String,
+        requiredScore: Int = 0,
+        requiredMaxTile: Int = 0,
+        requiredGamesPlayed: Int = 0
+    ) {
+        self.identifier = identifier
+        self.title = title
+        self.detail = detail
+        self.requiredScore = requiredScore
+        self.requiredMaxTile = requiredMaxTile
+        self.requiredGamesPlayed = requiredGamesPlayed
+    }
+
     func isEarned(score: Int, maxTile: Int, gamesPlayed: Int) -> Bool {
         score >= requiredScore
             && maxTile >= requiredMaxTile
@@ -197,69 +240,79 @@ struct AchievementDefinition {
     }
 }
 
-private let achievementDefinitions: [AchievementDefinition] = [
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.first_game",
-        title: "完成首局",
-        detail: "完成 1 局游戏",
-        requiredScore: 0,
-        requiredMaxTile: 0,
-        requiredGamesPlayed: 1
-    ),
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.tile_48",
-        title: "合成 48",
-        detail: "局内合成 48",
-        requiredScore: 0,
-        requiredMaxTile: 48,
-        requiredGamesPlayed: 0
-    ),
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.tile_96",
-        title: "合成 96",
-        detail: "局内合成 96",
-        requiredScore: 0,
-        requiredMaxTile: 96,
-        requiredGamesPlayed: 0
-    ),
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.tile_192",
-        title: "合成 192",
-        detail: "局内合成 192",
-        requiredScore: 0,
-        requiredMaxTile: 192,
-        requiredGamesPlayed: 0
-    ),
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.score_100",
-        title: "百分上手",
-        detail: "单局分数达到 100",
-        requiredScore: 100,
-        requiredMaxTile: 0,
-        requiredGamesPlayed: 0
-    ),
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.score_500",
-        title: "五百分突破",
-        detail: "单局分数达到 500",
-        requiredScore: 500,
-        requiredMaxTile: 0,
-        requiredGamesPlayed: 0
-    ),
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.score_1000",
-        title: "千分局",
-        detail: "单局分数达到 1000",
-        requiredScore: 1000,
-        requiredMaxTile: 0,
-        requiredGamesPlayed: 0
-    ),
-    AchievementDefinition(
-        identifier: "com.xiaodao.triyan.achievement.games_10",
-        title: "十局练习",
-        detail: "累计完成 10 局",
-        requiredScore: 0,
-        requiredMaxTile: 0,
-        requiredGamesPlayed: 10
-    )
-]
+private let achievementDefinitions: [AchievementDefinition] = {
+    let gameAchievements = [
+        AchievementDefinition(
+            identifier: "com.xiaodao.triyan.achievement.first_game",
+            title: "完成首局",
+            detail: "完成 1 局游戏",
+            requiredGamesPlayed: 1
+        ),
+        AchievementDefinition(
+            identifier: "com.xiaodao.triyan.achievement.games_10",
+            title: "十局练习",
+            detail: "累计完成 10 局",
+            requiredGamesPlayed: 10
+        ),
+        AchievementDefinition(
+            identifier: "com.xiaodao.triyan.achievement.games_25",
+            title: "稳定练习",
+            detail: "累计完成 25 局",
+            requiredGamesPlayed: 25
+        ),
+        AchievementDefinition(
+            identifier: "com.xiaodao.triyan.achievement.games_50",
+            title: "五十局突破",
+            detail: "累计完成 50 局",
+            requiredGamesPlayed: 50
+        ),
+        AchievementDefinition(
+            identifier: "com.xiaodao.triyan.achievement.games_100",
+            title: "百局达人",
+            detail: "累计完成 100 局",
+            requiredGamesPlayed: 100
+        )
+    ]
+
+    let scoreAchievements: [(score: Int, title: String)] = [
+        (100, "百分上手"),
+        (500, "五百分突破"),
+        (1_000, "千分局"),
+        (2_000, "两千分"),
+        (5_000, "五千分"),
+        (10_000, "万分挑战"),
+        (20_000, "两万分大师"),
+        (50_000, "五万分传说")
+    ]
+
+    let tileAchievements: [(tile: Int, title: String)] = [
+        (48, "合成 48"),
+        (96, "合成 96"),
+        (192, "合成 192"),
+        (384, "合成 384"),
+        (768, "合成 768"),
+        (1_536, "合成 1536"),
+        (3_072, "合成 3072"),
+        (6_144, "合成 6144"),
+        (12_288, "合成 12288"),
+        (24_576, "合成 24576")
+    ]
+
+    return gameAchievements
+        + scoreAchievements.map { item in
+            AchievementDefinition(
+                identifier: "com.xiaodao.triyan.achievement.score_\(item.score)",
+                title: item.title,
+                detail: "单局分数达到 \(item.score)",
+                requiredScore: item.score
+            )
+        }
+        + tileAchievements.map { item in
+            AchievementDefinition(
+                identifier: "com.xiaodao.triyan.achievement.tile_\(item.tile)",
+                title: item.title,
+                detail: "局内合成 \(item.tile)",
+                requiredMaxTile: item.tile
+            )
+        }
+}()
