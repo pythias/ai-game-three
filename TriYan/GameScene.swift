@@ -18,10 +18,10 @@ final class GameScene: SKScene {
     private var previewTileNode: SKSpriteNode?
     private var previewTileValue: Int?
 
-    private var nextCardNode: SKShapeNode!
+    private var nextCardNode: SKNode!
     private var nextTitleLabel: SKLabelNode!
     private var nextPreviewNode: SKNode!
-    private var scoreCardNode: SKShapeNode!
+    private var scoreCardNode: SKNode!
     private var scoreTitleLabel: SKLabelNode!
     private var scoreValueLabel: SKLabelNode!
     private var bestValueLabel: SKLabelNode!
@@ -39,15 +39,18 @@ final class GameScene: SKScene {
     private var achievementToastNode: SKNode?
     private var currentMenuOverlayPage: MenuOverlayPage = .settings
     private var currentGameAchievementIDs: [String] = []
+    private var didInstallPersistenceObservers = false
 
     private var isAnimating = false
     private var scenePhase: ScenePhase = .playing
     private var didRecordCurrentGame = false
     private var mergeStreak = 0
+    private var undoStack: [UndoSnapshot] = []
+    private var remainingUndos = 3
     private var pendingSwipe: SwipeDirection?
-    private var remainingHints = 3
     private var hapticsEnabled = UserDefaults.standard.object(forKey: "settings.hapticsEnabled") as? Bool ?? true
     private var nightModeEnabled = UserDefaults.standard.bool(forKey: "settings.nightModeEnabled")
+    private let savedGameKey = "game.currentSavedState.v1"
 
     private let scoreFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
@@ -79,12 +82,20 @@ final class GameScene: SKScene {
             setupHUD()
             layoutScene()
             prewarmTileTextures()
-            startNewGame()
+            installPersistenceObservers()
+            if !restoreSavedGameIfAvailable() {
+                startNewGame()
+            }
             syncHistoricalAchievements()
         } else {
             layoutScene()
         }
         installInput(on: view)
+    }
+
+    override func willMove(from view: SKView) {
+        super.willMove(from: view)
+        persistCurrentGameIfNeeded()
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
@@ -108,36 +119,44 @@ final class GameScene: SKScene {
     }
 
     private func setupHUD() {
+        // NEXT 卡片（居中顶部）
         nextCardNode = makeNextHUDCard(size: DesignSystem.Layout.nextCardSize)
+        nextCardNode.zPosition = 30
         addChild(nextCardNode)
 
-        nextTitleLabel = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
+        nextTitleLabel = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: .white)
         nextTitleLabel.horizontalAlignmentMode = .center
-        nextTitleLabel.fontSize = 14
+        nextTitleLabel.fontSize = 12
         nextTitleLabel.text = "NEXT"
-        nextTitleLabel.zPosition = 31
-        addChild(nextTitleLabel)
+        nextTitleLabel.zPosition = 32
+        nextTitleLabel.position = CGPoint(x: 0, y: 17)
+        nextCardNode.addChild(nextTitleLabel)
 
         nextPreviewNode = SKNode()
-        nextPreviewNode.zPosition = 31
-        addChild(nextPreviewNode)
+        nextPreviewNode.zPosition = 32
+        nextPreviewNode.position = CGPoint(x: 0, y: -12)
+        nextCardNode.addChild(nextPreviewNode)
 
+        // SCORE 卡片（居中，在 NEXT 下方）
         scoreCardNode = makeHUDCard(size: DesignSystem.Layout.scoreCardSize)
+        scoreCardNode.zPosition = 30
         addChild(scoreCardNode)
 
-        scoreTitleLabel = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: DesignSystem.Colors.textDark)
+        scoreTitleLabel = makeLabel(font: DesignSystem.Fonts.hudLabelFont(), color: .white)
         scoreTitleLabel.horizontalAlignmentMode = .center
-        scoreTitleLabel.fontSize = 20
+        scoreTitleLabel.fontSize = 14
         scoreTitleLabel.text = "SCORE"
-        scoreTitleLabel.zPosition = 31
-        addChild(scoreTitleLabel)
+        scoreTitleLabel.zPosition = 32
+        scoreTitleLabel.position = CGPoint(x: 0, y: 24)
+        scoreCardNode.addChild(scoreTitleLabel)
 
-        scoreValueLabel = makeLabel(font: DesignSystem.Fonts.hudValueFont(), color: DesignSystem.Colors.textDark)
+        scoreValueLabel = makeLabel(font: DesignSystem.Fonts.hudValueFont(), color: .white)
         scoreValueLabel.horizontalAlignmentMode = .center
-        scoreValueLabel.fontSize = 54
+        scoreValueLabel.fontSize = 48
         scoreValueLabel.text = "0"
-        scoreValueLabel.zPosition = 31
-        addChild(scoreValueLabel)
+        scoreValueLabel.zPosition = 32
+        scoreValueLabel.position = CGPoint(x: 0, y: -13)
+        scoreCardNode.addChild(scoreValueLabel)
 
         bestValueLabel = makeLabel(font: DesignSystem.Fonts.hudValueFont(), color: DesignSystem.Colors.progressFill)
         bestValueLabel.horizontalAlignmentMode = .center
@@ -167,9 +186,9 @@ final class GameScene: SKScene {
         addChild(restartHudButton)
 
         hintHudButton = makeButton(
-            size: CGSize(width: 156, height: 64),
-            fillColor: DesignSystem.Colors.buttonSecondaryBackground,
-            text: "💡  HINT",
+            size: CGSize(width: 184, height: 58),
+            fillColor: DesignSystem.Colors.buttonBackground,
+            text: "UNDO",
             textColor: .white,
             name: NodeName.hintButton
         )
@@ -199,6 +218,31 @@ final class GameScene: SKScene {
         inputController = controller
     }
 
+    private func installPersistenceObservers() {
+        guard !didInstallPersistenceObservers else { return }
+        didInstallPersistenceObservers = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+    }
+
+    @objc private func appWillResignActive() {
+        persistCurrentGameIfNeeded()
+    }
+
+    @objc private func appDidEnterBackground() {
+        persistCurrentGameIfNeeded()
+    }
+
     // MARK: - Layout
 
     private func layoutScene() {
@@ -209,12 +253,12 @@ final class GameScene: SKScene {
         let bottomInset = max(safeInsets.bottom, 20)
 
         // 布局比例（用户指定）
-        // BEST: y ≈ frame.maxY - 70
-        // SCORE: y ≈ frame.maxY - 170
+        // NEXT: y ≈ frame.maxY - 90（顶部居中）
+        // SCORE: y ≈ frame.maxY - 170（在 NEXT 下方）
         // 棋盘: y ≈ frame.maxY - 320（棋盘中心）
         // 底部按钮: y ≈ frame.minY + 50
-        let bestCenterY = frame.maxY - topInset - 50
-        let scoreCenterY = bestCenterY - 98
+        let nextCenterY = frame.maxY - topInset - 70
+        let scoreCenterY = nextCenterY - DesignSystem.Layout.nextCardSize.height / 2 - DesignSystem.Layout.scoreCardSize.height / 2 - 16
         let bottomButtonY = frame.minY + bottomInset + 42
 
         let gridSize = currentGridSize(in: view)
@@ -229,21 +273,18 @@ final class GameScene: SKScene {
         let horizontalPadding: CGFloat = 28
         let rightCardX = frame.maxX - rightInset - 34
 
-        menuButton.position = CGPoint(x: rightCardX, y: bestCenterY)
+        menuButton.position = CGPoint(x: rightCardX, y: nextCenterY)
 
-        nextCardNode.position = CGPoint(x: frame.midX, y: bestCenterY)
-        nextTitleLabel.position = CGPoint(x: frame.midX, y: bestCenterY + 23)
-        nextPreviewNode.position = CGPoint(x: frame.midX, y: bestCenterY - 13)
-        bestValueLabel.position = CGPoint(x: frame.midX + 42, y: bestCenterY - 2)
+        nextCardNode.position = CGPoint(x: frame.midX, y: nextCenterY)
 
         scoreCardNode.position = CGPoint(x: frame.midX, y: scoreCenterY)
-        scoreTitleLabel.position = CGPoint(x: frame.midX, y: scoreCenterY + 24)
-        scoreValueLabel.position = CGPoint(x: frame.midX, y: scoreCenterY - 14)
 
         let buttonGap: CGFloat = 18
         let buttonWidth = min(156, (frame.width - horizontalPadding * 2 - buttonGap) / 2)
-        restartHudButton.position = CGPoint(x: frame.midX - buttonWidth / 2 - buttonGap / 2, y: bottomButtonY)
-        hintHudButton.position = CGPoint(x: frame.midX + buttonWidth / 2 + buttonGap / 2, y: bottomButtonY)
+        // Restart 按钮已隐藏（由 hintHudButton 替代），仅保留变量
+        restartHudButton.alpha = 0
+        restartHudButton.isHidden = true
+        hintHudButton.position = CGPoint(x: frame.midX, y: bottomButtonY)
         // Hint 角标更靠右上（悬浮红色气泡感）
         hintBadgeNode.position = CGPoint(x: hintHudButton.position.x + buttonWidth / 2 - 6, y: bottomButtonY + 32)
 
@@ -251,7 +292,8 @@ final class GameScene: SKScene {
     }
 
     private func currentGridSize(in view: SKView) -> CGFloat {
-        min(DesignSystem.Layout.gridSize(in: view), view.bounds.height * 0.43)
+        // 棋盘放大 10%，提升视觉占比
+        min(DesignSystem.Layout.gridSize(in: view) * 1.10, view.bounds.height * 0.43)
     }
 
     private func layoutBackground(size: CGSize) {
@@ -279,8 +321,8 @@ final class GameScene: SKScene {
         let boardCenter = CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
 
         let aura = SKShapeNode(ellipseOf: CGSize(width: boardWidth * 1.04, height: boardHeight * 1.06))
-        aura.fillColor = DesignSystem.Colors.boardBackground.withAlphaComponent(0.24)
-        aura.strokeColor = UIColor.white.withAlphaComponent(0.1)
+        aura.fillColor = themeBoardBaseColor.withAlphaComponent(nightModeEnabled ? 0.16 : 0.24)
+        aura.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.06 : 0.1)
         aura.lineWidth = 1
         aura.name = NodeName.boardPanel
         aura.position = CGPoint(x: boardCenter.x, y: boardCenter.y - cellSize * 0.04)
@@ -288,7 +330,7 @@ final class GameScene: SKScene {
         gridNode.addChild(aura)
 
         let groundShadow = SKShapeNode(ellipseOf: CGSize(width: boardWidth * 0.92, height: boardHeight * 0.92))
-        groundShadow.fillColor = UIColor.black.withAlphaComponent(0.16)
+        groundShadow.fillColor = UIColor.black.withAlphaComponent(nightModeEnabled ? 0.34 : 0.16)
         groundShadow.strokeColor = .clear
         groundShadow.name = NodeName.boardPanel
         groundShadow.position = CGPoint(x: boardCenter.x, y: boardCenter.y - cellSize * 0.14)
@@ -299,7 +341,7 @@ final class GameScene: SKScene {
             let slotPosition = pointForGridPosition(position, gridSize: gridSize, cellSize: cellSize)
 
             let shadow = SKShapeNode(path: hexPath(radius: cellRadius * 1.08))
-            shadow.fillColor = UIColor.black.withAlphaComponent(0.2)
+            shadow.fillColor = UIColor.black.withAlphaComponent(nightModeEnabled ? 0.34 : 0.2)
             shadow.strokeColor = .clear
             shadow.name = NodeName.boardPanel
             shadow.position = CGPoint(x: slotPosition.x, y: slotPosition.y - cellSize * 0.07)
@@ -307,36 +349,48 @@ final class GameScene: SKScene {
             gridNode.addChild(shadow)
 
             let base = SKShapeNode(path: hexPath(radius: cellRadius * 1.04))
-            base.fillColor = DesignSystem.Colors.boardBackground.withAlphaComponent(0.82)
-            base.strokeColor = UIColor.white.withAlphaComponent(0.2)
+            base.fillColor = themeBoardBaseColor.withAlphaComponent(nightModeEnabled ? 0.72 : 0.82)
+            base.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.1 : 0.2)
             base.lineWidth = 1.2
             base.name = NodeName.boardPanel
             base.position = slotPosition
             base.zPosition = -7
             gridNode.addChild(base)
 
-            let inset = SKShapeNode(path: hexPath(radius: cellRadius * 0.9))
-            inset.fillColor = DesignSystem.Colors.emptyCell
-            inset.strokeColor = DesignSystem.Colors.emptyCellStroke
-            inset.lineWidth = 1
+            // --- 空槽位：深蓝凹槽 ---
+            // 1. 外层阴影（凹槽感）
+            let insetOuter = SKShapeNode(path: hexPath(radius: cellRadius * 1.06))
+            insetOuter.fillColor = themeEmptyCellInnerShadowColor
+            insetOuter.strokeColor = .clear
+            insetOuter.name = NodeName.cell
+            insetOuter.position = CGPoint(x: slotPosition.x, y: slotPosition.y - cellSize * 0.04)
+            insetOuter.zPosition = -7
+            gridNode.addChild(insetOuter)
+
+            // 2. 主凹槽填充
+            let inset = SKShapeNode(path: hexPath(radius: cellRadius * 0.97))
+            inset.fillColor = themeEmptyCellColor
+            inset.strokeColor = themeEmptyCellStrokeColor
+            inset.lineWidth = 1.5
             inset.name = NodeName.cell
             inset.position = slotPosition
             inset.zPosition = -5
             gridNode.addChild(inset)
 
-            let highlight = SKShapeNode(path: hexPath(radius: cellRadius * 0.78))
-            highlight.fillColor = .clear
-            highlight.strokeColor = UIColor.white.withAlphaComponent(0.11)
-            highlight.lineWidth = 1
-            highlight.name = NodeName.boardPanel
-            highlight.position = CGPoint(x: slotPosition.x, y: slotPosition.y + cellSize * 0.04)
-            highlight.zPosition = -4
-            gridNode.addChild(highlight)
+            // 3. 内层亮边（顶部高光：模拟光线从上方射入）
+            let insetHighlight = SKShapeNode(path: hexPath(radius: cellRadius * 0.84))
+            insetHighlight.fillColor = .clear
+            insetHighlight.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.08 : 0.14)
+            insetHighlight.lineWidth = 1
+            insetHighlight.name = NodeName.boardPanel
+            insetHighlight.position = CGPoint(x: slotPosition.x, y: slotPosition.y + cellSize * 0.03)
+            insetHighlight.zPosition = -4
+            gridNode.addChild(insetHighlight)
         }
 
         let rim = SKShapeNode(ellipseOf: CGSize(width: boardWidth * 0.98, height: boardHeight))
         rim.fillColor = .clear
-        rim.strokeColor = UIColor.white.withAlphaComponent(0.08)
+        rim.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.04 : 0.08)
         rim.lineWidth = 2
         rim.name = NodeName.boardPanel
         rim.position = boardCenter
@@ -402,7 +456,8 @@ final class GameScene: SKScene {
         currentGameAchievementIDs.removeAll()
         achievementToastNode?.removeFromParent()
         achievementToastNode = nil
-        remainingHints = 3
+        remainingUndos = 3
+        undoStack.removeAll()
 
         model.reset()
         tileNodes.values.forEach { $0.removeFromParent() }
@@ -427,7 +482,8 @@ final class GameScene: SKScene {
         }
 
         updateHUD()
-        updateHintBadge()
+        updateUndoBadge()
+        persistCurrentGameIfNeeded()
     }
 
     private func syncHistoricalAchievements() {
@@ -440,6 +496,8 @@ final class GameScene: SKScene {
     }
 
     private func handleSwipe(_ swipe: SwipeDirection) {
+        guard infoDialogNode == nil else { return }
+
         if scenePhase == .menu {
             switch swipe {
             case .west, .northwest, .southwest:
@@ -456,12 +514,22 @@ final class GameScene: SKScene {
             return
         }
 
+        let undoSnapshot = UndoSnapshot(
+            cells: model.snapshot(),
+            score: model.score,
+            mergeStreak: mergeStreak,
+            previewValue: spawner.previewTile.value
+        )
+
         let result = model.move(directionForSwipe(swipe))
         guard result.didMove else {
             playImpact(.light)
-            mergeStreak = 0
             return
         }
+
+        undoStack.append(undoSnapshot)
+        if undoStack.count > 3 { undoStack.removeFirst() }
+        updateUndoBadge()
 
         isAnimating = true
         if result.merges.isEmpty {
@@ -532,12 +600,16 @@ final class GameScene: SKScene {
         isAnimating = false
 
         if model.isGameOver {
+            clearSavedGame()
             showGameOver()
         } else if let pendingSwipe {
+            persistCurrentGameIfNeeded()
             self.pendingSwipe = nil
             run(.wait(forDuration: 0.015)) { [weak self] in
                 self?.handleSwipe(pendingSwipe)
             }
+        } else {
+            persistCurrentGameIfNeeded()
         }
     }
 
@@ -820,7 +892,7 @@ final class GameScene: SKScene {
             let centerY = size.height * 0.5
             let glowRadius = size.width * 0.6
             let radialColors = [
-                UIColor.white.withAlphaComponent(0.08).cgColor,
+                UIColor.white.withAlphaComponent(nightModeEnabled ? 0.035 : 0.08).cgColor,
                 UIColor.clear.cgColor
             ] as CFArray
             let radialLocations: [CGFloat] = [0, 1]
@@ -840,7 +912,7 @@ final class GameScene: SKScene {
             }
 
             // === 3. 顶部柔边光 ===
-            UIColor.white.withAlphaComponent(0.12).setFill()
+            UIColor.white.withAlphaComponent(nightModeEnabled ? 0.045 : 0.12).setFill()
             cgContext.fillEllipse(in: CGRect(
                 x: -size.width * 0.22,
                 y: -size.height * 0.12,
@@ -849,7 +921,9 @@ final class GameScene: SKScene {
             ))
 
             // === 4. 右下金色光斑 ===
-            DesignSystem.Colors.progressFill.withAlphaComponent(0.06).setFill()
+            (nightModeEnabled ? UIColor(hex: "#6E4BFF") : DesignSystem.Colors.progressFill)
+                .withAlphaComponent(nightModeEnabled ? 0.05 : 0.06)
+                .setFill()
             cgContext.fillEllipse(in: CGRect(
                 x: size.width * 0.62,
                 y: size.height * 0.08,
@@ -857,8 +931,76 @@ final class GameScene: SKScene {
                 height: size.width * 0.52
             ))
 
-            // === 5. 斜线纹理（透明度大幅降低，不再抢棋盘注意力）===
-            UIColor.white.withAlphaComponent(0.07).setStroke()
+            // === 5. 棋盘后方圆形光环（聚焦感）===
+            let boardAreaY = size.height * 0.48
+            let haloColor = nightModeEnabled
+                ? UIColor(hex: "#4A6FFF").withAlphaComponent(0.12)
+                : UIColor(hex: "#4A9FFF").withAlphaComponent(0.09)
+            let haloPath = UIBezierPath(
+                ovalIn: CGRect(
+                    x: size.width * 0.15,
+                    y: boardAreaY - size.width * 0.32,
+                    width: size.width * 0.7,
+                    height: size.width * 0.64
+                )
+            )
+            haloColor.setFill()
+            haloPath.fill()
+
+            // === 6. 漂浮六边形（游戏氛围感）===
+            let hexR = size.width * 0.045
+            let hexPositions: [(CGFloat, CGFloat, CGFloat)] = [
+                (size.width * 0.08, size.height * 0.72, hexR * 0.9),
+                (size.width * 0.88, size.height * 0.65, hexR * 0.7),
+                (size.width * 0.15, size.height * 0.28, hexR * 0.6),
+                (size.width * 0.82, size.height * 0.35, hexR * 0.8),
+                (size.width * 0.75, size.height * 0.82, hexR * 0.65),
+                (size.width * 0.22, size.height * 0.55, hexR * 0.5),
+                (size.width * 0.9, size.height * 0.18, hexR * 0.55),
+                (size.width * 0.06, size.height * 0.12, hexR * 0.7),
+            ]
+            for (hx, hy, r) in hexPositions {
+                let hPath = UIBezierPath(cgPath: hexPath(radius: r, center: CGPoint(x: hx, y: hy)))
+                let hFill = nightModeEnabled
+                    ? UIColor(hex: "#5B8FFF").withAlphaComponent(0.08)
+                    : UIColor(hex: "#4A9FFF").withAlphaComponent(0.06)
+                hFill.setStroke()
+                hPath.lineWidth = 1.2
+                hPath.stroke()
+            }
+
+            // === 7. 暗角（增加层次感）===
+            let vignetteColors = [
+                UIColor.black.withAlphaComponent(nightModeEnabled ? 0.38 : 0.28).cgColor,
+                UIColor.clear.cgColor
+            ] as CFArray
+            let vignetteLocations: [CGFloat] = [0, 1]
+            if let vignetteGradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                colors: vignetteColors,
+                locations: vignetteLocations
+            ) {
+                // 四个角的暗角
+                let corners: [(CGPoint, CGPoint)] = [
+                    (CGPoint(x: 0, y: 0), CGPoint(x: size.width * 0.45, y: size.height * 0.45)),
+                    (CGPoint(x: size.width, y: 0), CGPoint(x: size.width * 0.55, y: size.height * 0.45)),
+                    (CGPoint(x: 0, y: size.height), CGPoint(x: size.width * 0.45, y: size.height * 0.55)),
+                    (CGPoint(x: size.width, y: size.height), CGPoint(x: size.width * 0.55, y: size.height * 0.55)),
+                ]
+                for (start, end) in corners {
+                    cgContext.drawRadialGradient(
+                        vignetteGradient,
+                        startCenter: start,
+                        startRadius: 0,
+                        endCenter: end,
+                        endRadius: max(size.width, size.height) * 0.7,
+                        options: []
+                    )
+                }
+            }
+
+            // === 8. 斜线纹理（透明度大幅降低，不再抢棋盘注意力）===
+            UIColor.white.withAlphaComponent(nightModeEnabled ? 0.035 : 0.07).setStroke()
             cgContext.setLineWidth(1)
             let step: CGFloat = 34
             var x: CGFloat = -size.height
@@ -895,13 +1037,174 @@ final class GameScene: SKScene {
         scoreValueLabel.text = formatScore(model.score)
         bestValueLabel.text = ""
         updatePreviewTile(animated: true)
-        updateHintBadge()
+        updateUndoBadge()
     }
 
-    private func updateHintBadge() {
-        hintBadgeLabel.text = "\(remainingHints)"
-        hintBadgeNode.isHidden = remainingHints <= 0
-        hintHudButton.alpha = remainingHints <= 0 ? 0.62 : 1
+    private func performUndo() {
+        guard scenePhase == .playing, !isAnimating, remainingUndos > 0, let snapshot = undoStack.popLast() else {
+            playImpact(.light)
+            return
+        }
+        remainingUndos -= 1
+        updateUndoBadge()
+
+        model.restore(cells: snapshot.cells, score: snapshot.score)
+        mergeStreak = snapshot.mergeStreak
+        spawner.forcePreview(value: snapshot.previewValue)
+        audioManager.playMove()
+        animateUndoRestore(to: snapshot.cells)
+    }
+
+    private func animateUndoRestore(to restoredCells: [GridPosition: Tile]) {
+        isAnimating = true
+
+        let existingNodes = Array(tileNodes.values)
+        for node in existingNodes {
+            node.removeAllActions()
+            let shrink = SKAction.scale(to: 0.72, duration: 0.12)
+            shrink.timingMode = .easeIn
+            let fade = SKAction.fadeOut(withDuration: 0.12)
+            node.run(.group([shrink, fade]))
+        }
+
+        let scorePulse = SKAction.sequence([
+            .scale(to: 0.88, duration: 0.08),
+            .scale(to: 1, duration: 0.14)
+        ])
+        scoreValueLabel.run(scorePulse)
+
+        run(.wait(forDuration: 0.13)) { [weak self] in
+            guard let self else { return }
+
+            self.tileNodes.values.forEach { $0.removeFromParent() }
+            self.tileNodes.removeAll()
+
+            for (position, tile) in restoredCells {
+                let node = self.makeTileNode(value: tile.value)
+                node.position = self.positionForGrid(position)
+                node.alpha = 0
+                node.setScale(0.74)
+                self.gridNode.addChild(node)
+                self.tileNodes[position] = node
+
+                let appear = SKAction.group([
+                    .fadeIn(withDuration: 0.16),
+                    .scale(to: 1.04, duration: 0.16)
+                ])
+                appear.timingMode = .easeOut
+                let settle = SKAction.scale(to: 1, duration: 0.08)
+                settle.timingMode = .easeInEaseOut
+                node.run(.sequence([appear, settle]))
+            }
+
+            self.updateHUD()
+            self.persistCurrentGameIfNeeded()
+            self.playImpact(.light)
+            self.run(.wait(forDuration: 0.12)) { [weak self] in
+                self?.isAnimating = false
+            }
+        }
+    }
+
+    private func updateUndoBadge() {
+        hintBadgeLabel.text = "\(remainingUndos)"
+        hintBadgeNode.isHidden = remainingUndos <= 0
+        hintHudButton.alpha = remainingUndos <= 0 ? 0.62 : 1
+    }
+
+    private func restoreSavedGameIfAvailable() -> Bool {
+        guard let data = UserDefaults.standard.data(forKey: savedGameKey),
+              let saved = try? JSONDecoder().decode(SavedGameState.self, from: data),
+              saved.version == 1,
+              !saved.isGameOver else {
+            return false
+        }
+
+        let restoredCells = cells(from: saved.cells)
+        guard !restoredCells.isEmpty else {
+            clearSavedGame()
+            return false
+        }
+
+        closeAllOverlays()
+        scenePhase = .playing
+        didRecordCurrentGame = false
+        isAnimating = false
+        pendingSwipe = nil
+        currentGameAchievementIDs.removeAll()
+        achievementToastNode?.removeFromParent()
+        achievementToastNode = nil
+
+        model.restore(cells: restoredCells, score: saved.score)
+        spawner.forcePreview(value: saved.previewValue)
+        mergeStreak = saved.mergeStreak
+        remainingUndos = min(3, max(0, saved.remainingUndos))
+        undoStack = saved.undoStack.map {
+            UndoSnapshot(
+                cells: cells(from: $0.cells),
+                score: $0.score,
+                mergeStreak: $0.mergeStreak,
+                previewValue: $0.previewValue
+            )
+        }.filter { !$0.cells.isEmpty }
+
+        tileNodes.values.forEach { $0.removeFromParent() }
+        tileNodes.removeAll()
+        rebuildTileNodes()
+        updateHUD()
+        updateUndoBadge()
+        return true
+    }
+
+    private func persistCurrentGameIfNeeded() {
+        guard gridNode != nil else { return }
+        guard scenePhase != .gameOver, !model.isGameOver else {
+            clearSavedGame()
+            return
+        }
+
+        let state = SavedGameState(
+            version: 1,
+            score: model.score,
+            previewValue: spawner.previewTile.value,
+            mergeStreak: mergeStreak,
+            remainingUndos: remainingUndos,
+            isGameOver: model.isGameOver,
+            cells: savedCells(from: model.snapshot()),
+            undoStack: undoStack.map {
+                SavedUndoSnapshot(
+                    cells: savedCells(from: $0.cells),
+                    score: $0.score,
+                    mergeStreak: $0.mergeStreak,
+                    previewValue: $0.previewValue
+                )
+            }
+        )
+
+        guard !state.cells.isEmpty,
+              let data = try? JSONEncoder().encode(state) else { return }
+        UserDefaults.standard.set(data, forKey: savedGameKey)
+    }
+
+    private func clearSavedGame() {
+        UserDefaults.standard.removeObject(forKey: savedGameKey)
+    }
+
+    private func savedCells(from cells: [GridPosition: Tile]) -> [SavedCell] {
+        GameModel.visualPositions.compactMap { position in
+            guard let tile = cells[position] else { return nil }
+            return SavedCell(row: position.row, col: position.col, value: tile.value)
+        }
+    }
+
+    private func cells(from savedCells: [SavedCell]) -> [GridPosition: Tile] {
+        var cells: [GridPosition: Tile] = [:]
+        for savedCell in savedCells {
+            let position = GridPosition(row: savedCell.row, col: savedCell.col)
+            guard GameModel.isValid(position), savedCell.value > 0 else { continue }
+            cells[position] = Tile(savedCell.value)
+        }
+        return cells
     }
 
     private func showMergeFeedback(for result: MoveResult) {
@@ -1132,10 +1435,10 @@ final class GameScene: SKScene {
         let row = SKNode()
 
         let background = SKShapeNode(rectOf: CGSize(width: 296, height: 58), cornerRadius: 16)
-        background.fillColor = DesignSystem.Colors.glassCardBg
+        background.fillColor = nightModeEnabled ? UIColor(hex: "#071A42").withAlphaComponent(0.9) : DesignSystem.Colors.glassCardBg
         background.strokeColor = rank == 1
             ? DesignSystem.Colors.goldWarm.withAlphaComponent(0.4)
-            : DesignSystem.Colors.separator
+            : UIColor.white.withAlphaComponent(nightModeEnabled ? 0.08 : 0.12)
         background.lineWidth = 1
         row.addChild(background)
 
@@ -1192,16 +1495,16 @@ final class GameScene: SKScene {
         let boardHeight = hexHeight(width: tileSize) + hexHeight(width: tileSize) * 0.75 * 4
 
         let background = SKShapeNode(rectOf: CGSize(width: boardWidth + 10, height: boardHeight + 8), cornerRadius: max(6, tileSize * 0.5))
-        background.fillColor = DesignSystem.Colors.boardBackground.withAlphaComponent(0.42)
-        background.strokeColor = UIColor.white.withAlphaComponent(0.5)
+        background.fillColor = themeBoardBaseColor.withAlphaComponent(nightModeEnabled ? 0.5 : 0.42)
+        background.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.24 : 0.5)
         background.lineWidth = 1
         root.addChild(background)
 
         for (index, position) in GameModel.visualPositions.enumerated() {
             let value = index < values.count ? values[index] : 0
             let cell = SKShapeNode(path: hexPath(width: tileSize))
-            cell.fillColor = value > 0 ? DesignSystem.Colors.tileBackground(for: value) : DesignSystem.Colors.emptyCell
-            cell.strokeColor = UIColor.white.withAlphaComponent(value > 0 ? 0.28 : 0.14)
+            cell.fillColor = value > 0 ? DesignSystem.Colors.tileBackground(for: value) : themeEmptyCellColor
+            cell.strokeColor = UIColor.white.withAlphaComponent(value > 0 ? 0.28 : (nightModeEnabled ? 0.08 : 0.14))
             cell.lineWidth = 0.7
             cell.alpha = 1
             cell.position = pointForGridPosition(position, gridSize: boardWidth, cellSize: tileSize)
@@ -1382,8 +1685,8 @@ final class GameScene: SKScene {
         gradient.position = CGPoint(x: size.width / 2, y: size.height / 2)
         gradient.zPosition = -2
         let gradientTex = makeGradientTexture(width: Int(size.width), height: Int(size.height),
-            topColor: DesignSystem.Colors.overlayGradientTop,
-            bottomColor: DesignSystem.Colors.overlayGradientBottom)
+            topColor: nightModeEnabled ? UIColor(hex: "#061332") : DesignSystem.Colors.overlayGradientTop,
+            bottomColor: nightModeEnabled ? UIColor(hex: "#020713") : DesignSystem.Colors.overlayGradientBottom)
         gradient.texture = gradientTex
         root.addChild(gradient)
 
@@ -1392,7 +1695,8 @@ final class GameScene: SKScene {
         let cy = size.height * 0.48
         let glowRadius = min(size.width, size.height) * 0.45
         let glowNode = SKShapeNode(circleOfRadius: glowRadius)
-        let glowColor = DesignSystem.Colors.goldWarm.withAlphaComponent(0.06)
+        let glowColor = (nightModeEnabled ? UIColor(hex: "#596CFF") : DesignSystem.Colors.goldWarm)
+            .withAlphaComponent(nightModeEnabled ? 0.04 : 0.06)
         glowNode.fillColor = glowColor
         glowNode.strokeColor = .clear
         glowNode.position = CGPoint(x: cx, y: cy)
@@ -1403,7 +1707,7 @@ final class GameScene: SKScene {
         let sparkCount = 48
         for _ in 0..<sparkCount {
             let spark = SKShapeNode(circleOfRadius: CGFloat.random(in: 0.8...2.4))
-            let brightness = CGFloat.random(in: 0.2...0.7)
+            let brightness = CGFloat.random(in: nightModeEnabled ? 0.14...0.46 : 0.2...0.7)
             spark.fillColor = UIColor.white.withAlphaComponent(brightness)
             spark.strokeColor = .clear
             spark.position = CGPoint(
@@ -1411,7 +1715,7 @@ final class GameScene: SKScene {
                 y: CGFloat.random(in: 0...size.height)
             )
             spark.zPosition = 0
-            spark.alpha = CGFloat.random(in: 0.1...0.5)
+            spark.alpha = CGFloat.random(in: nightModeEnabled ? 0.06...0.32 : 0.1...0.5)
             root.addChild(spark)
         }
 
@@ -1588,7 +1892,8 @@ final class GameScene: SKScene {
         let cx = frame.midX
 
         let titleGlow = SKShapeNode(ellipseOf: CGSize(width: 190, height: 44))
-        titleGlow.fillColor = DesignSystem.Colors.backgroundGlow.withAlphaComponent(0.14)
+        titleGlow.fillColor = (nightModeEnabled ? UIColor(hex: "#5875FF") : DesignSystem.Colors.backgroundGlow)
+            .withAlphaComponent(nightModeEnabled ? 0.08 : 0.14)
         titleGlow.strokeColor = .clear
         titleGlow.position = CGPoint(x: cx, y: titleY - 3)
         page.addChild(titleGlow)
@@ -1610,7 +1915,9 @@ final class GameScene: SKScene {
             let isActive = i == activeIdx
             let dot = SKShapeNode(circleOfRadius: isActive ? 5.5 : 4)
             dot.fillColor = isActive ? UIColor.white : UIColor.white.withAlphaComponent(0.2)
-            dot.strokeColor = isActive ? DesignSystem.Colors.backgroundGlow.withAlphaComponent(0.8) : UIColor.white.withAlphaComponent(0.42)
+            dot.strokeColor = isActive
+                ? (nightModeEnabled ? UIColor(hex: "#7D8DFF") : DesignSystem.Colors.backgroundGlow).withAlphaComponent(nightModeEnabled ? 0.58 : 0.8)
+                : UIColor.white.withAlphaComponent(nightModeEnabled ? 0.24 : 0.42)
             dot.lineWidth = 1
             dot.position = CGPoint(x: centerX - totalW / 2 + CGFloat(i) * spacing, y: y)
             dot.zPosition = 2
@@ -1625,10 +1932,10 @@ final class GameScene: SKScene {
         let topY = center.y + size.height / 2 - 54
 
         let rows: [(String, UIColor, String, String, SettingsRowAccessory, String)] = [
-            ("🔊", UIColor(hex: "#B84DFF"), "音效", "合成、移动音效", .toggle(isOn: !audioManager.muted), NodeName.soundToggleButton),
-            ("♪", UIColor(hex: "#FF941F"), "背景音乐", "游戏背景音乐", .toggle(isOn: !audioManager.musicMuted), NodeName.musicToggleButton),
-            ("▣", UIColor(hex: "#20B8FF"), "震动反馈", "合成、移动震动", .toggle(isOn: hapticsEnabled), NodeName.hapticsToggleButton),
-            ("⬢", UIColor(hex: "#2B345E"), "黑夜模式", "切换深色背景", .toggle(isOn: nightModeEnabled), NodeName.nightModeToggleButton),
+            ("S", UIColor(hex: "#B84DFF"), "音效", "合成、移动音效", .toggle(isOn: !audioManager.muted), NodeName.soundToggleButton),
+            ("M", UIColor(hex: "#FF941F"), "背景音乐", "游戏背景音乐", .toggle(isOn: !audioManager.musicMuted), NodeName.musicToggleButton),
+            ("V", UIColor(hex: "#20B8FF"), "震动反馈", "合成、移动震动", .toggle(isOn: hapticsEnabled), NodeName.hapticsToggleButton),
+            ("N", UIColor(hex: "#2B345E"), "黑夜模式", "切换深色背景", .toggle(isOn: nightModeEnabled), NodeName.nightModeToggleButton),
             ("GC", UIColor(hex: "#58C71C"), "Game Center", "查看成就和排行榜", .arrow, NodeName.gameCenterButton),
             ("i", UIColor(hex: "#35A8FF"), "关于 / 隐私", "隐私政策和用户协议", .arrow, NodeName.privacyButton)
         ]
@@ -1737,7 +2044,7 @@ final class GameScene: SKScene {
 
     private func buildSettingsContent(into page: SKNode, center: CGPoint) {
         let soundRow = makeGameSettingsRow(
-            icon: "🔊",
+            icon: "S",
             title: "音效",
             detail: audioManager.muted ? "已关闭" : "已开启",
             name: NodeName.soundToggleButton,
@@ -1748,7 +2055,7 @@ final class GameScene: SKScene {
 
         // 隐私说明行
         let privacyRow = makeGameSettingsRow(
-            icon: "🛡️",
+            icon: "i",
             title: "隐私说明",
             detail: "本地数据与 Game Center",
             name: NodeName.privacyButton,
@@ -1765,11 +2072,11 @@ final class GameScene: SKScene {
         // 整行背景
         let bg = SKShapeNode(rectOf: CGSize(width: 292, height: 44), cornerRadius: 14)
         bg.fillColor = isUnlocked
-            ? DesignSystem.Colors.goldWarm.withAlphaComponent(0.14)
-            : DesignSystem.Colors.glassCardBg
+            ? DesignSystem.Colors.goldWarm.withAlphaComponent(nightModeEnabled ? 0.1 : 0.14)
+            : (nightModeEnabled ? UIColor(hex: "#071A42").withAlphaComponent(0.9) : DesignSystem.Colors.glassCardBg)
         bg.strokeColor = isUnlocked
-            ? DesignSystem.Colors.goldWarm.withAlphaComponent(0.38)
-            : DesignSystem.Colors.separator
+            ? DesignSystem.Colors.goldWarm.withAlphaComponent(nightModeEnabled ? 0.28 : 0.38)
+            : UIColor.white.withAlphaComponent(nightModeEnabled ? 0.08 : 0.12)
         bg.lineWidth = 1
         row.addChild(bg)
 
@@ -1820,14 +2127,14 @@ final class GameScene: SKScene {
         let cardWidth: CGFloat = 296
 
         let privacyCard = SKShapeNode(rectOf: CGSize(width: cardWidth, height: 184), cornerRadius: 18)
-        privacyCard.fillColor = DesignSystem.Colors.glassCardBg
-        privacyCard.strokeColor = DesignSystem.Colors.glassCardStroke
+        privacyCard.fillColor = nightModeEnabled ? UIColor(hex: "#071A42").withAlphaComponent(0.9) : DesignSystem.Colors.glassCardBg
+        privacyCard.strokeColor = nightModeEnabled ? UIColor.white.withAlphaComponent(0.1) : DesignSystem.Colors.glassCardStroke
         privacyCard.lineWidth = 1
         privacyCard.position = CGPoint(x: center.x, y: center.y + 24)
         page.addChild(privacyCard)
 
         let privacyIcon = makeLabel(font: .systemFont(ofSize: 18), color: .white)
-        privacyIcon.text = "🛡️"
+        privacyIcon.text = "i"
         privacyIcon.position = CGPoint(x: center.x - 118, y: center.y + 82)
         page.addChild(privacyIcon)
 
@@ -1896,7 +2203,8 @@ final class GameScene: SKScene {
         let titleY = frame.maxY - topInset - 70
 
         let titleGlow = SKShapeNode(ellipseOf: CGSize(width: 154, height: 42))
-        titleGlow.fillColor = DesignSystem.Colors.backgroundGlow.withAlphaComponent(0.16)
+        titleGlow.fillColor = (nightModeEnabled ? UIColor(hex: "#5875FF") : DesignSystem.Colors.backgroundGlow)
+            .withAlphaComponent(nightModeEnabled ? 0.08 : 0.16)
         titleGlow.strokeColor = .clear
         titleGlow.position = CGPoint(x: cx, y: titleY - 2)
         page.addChild(titleGlow)
@@ -1924,7 +2232,7 @@ final class GameScene: SKScene {
         let secondRowY = cardCenterY - rowGap / 2 - rowHeight / 2
 
         let soundRow = makeLargeSettingsRow(
-            icon: "🔊",
+            icon: "S",
             iconColor: UIColor(hex: "#B84DFF"),
             title: "音效",
             detail: "合成、移动音效",
@@ -1936,7 +2244,7 @@ final class GameScene: SKScene {
         page.addChild(soundRow)
 
         let privacyRow = makeLargeSettingsRow(
-            icon: "🛡️",
+            icon: "i",
             iconColor: UIColor(hex: "#FF8A1D"),
             title: "隐私政策",
             detail: "本地数据与 Game Center",
@@ -2097,6 +2405,23 @@ final class GameScene: SKScene {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
         let location = touch.location(in: self)
+
+        if infoDialogNode != nil {
+            for hitNode in nodes(at: location) {
+                var current: SKNode? = hitNode
+                while let candidate = current {
+                    if candidate.name == NodeName.infoDialogCloseButton {
+                        audioManager.playButton()
+                        infoDialogNode?.removeFromParent()
+                        infoDialogNode = nil
+                        return
+                    }
+                    current = candidate.parent
+                }
+            }
+            return
+        }
+
         let node = atPoint(location)
 
         var current: SKNode? = node
@@ -2119,7 +2444,7 @@ final class GameScene: SKScene {
                 return
             case NodeName.hintButton:
                 audioManager.playButton()
-                showHintPulse()
+                performUndo()
                 return
             case NodeName.closeHistoryButton:
                 audioManager.playButton()
@@ -2155,7 +2480,9 @@ final class GameScene: SKScene {
                 nightModeEnabled.toggle()
                 UserDefaults.standard.set(nightModeEnabled, forKey: "settings.nightModeEnabled")
                 backgroundTextureCache.removeAll()
-                layoutBackground(size: frame.size)
+                rebuildHUDCards()
+                updateThemeChrome()
+                layoutScene()
                 rebuildOverlayPage(for: scenePhase)
                 return
             case NodeName.gameCenterButton:
@@ -2205,38 +2532,97 @@ final class GameScene: SKScene {
         }
     }
 
-    private func showHintPulse() {
-        guard remainingHints > 0 else {
-            playImpact(.light)
-            return
-        }
-        remainingHints -= 1
-        updateHintBadge()
-
-        let candidates = GameModel.visualPositions.filter { position in
-            guard let tile = model.tile(at: position) else { return false }
-            return MoveDirection.allCases.contains { direction in
-                let neighbor = GameModel.neighbor(from: position, direction: direction)
-                guard let other = model.tile(at: neighbor) else { return false }
-                return Tile.canMerge(tile, other)
-            }
-        }
-
-        guard let position = candidates.randomElement() else {
-            playImpact(.light)
-            return
-        }
-
-        let scenePosition = gridNode.convert(positionForGrid(position), to: self)
-        playMilestoneEffect(at: scenePosition, value: model.tile(at: position)?.value ?? 3)
-    }
-
     private func playImpact(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
         guard hapticsEnabled else { return }
         UIImpactFeedbackGenerator(style: style).impactOccurred()
     }
 
     // MARK: - Node Factory
+
+    private var themeBoardBaseColor: UIColor {
+        nightModeEnabled ? UIColor(hex: "#071B45") : DesignSystem.Colors.boardBackground
+    }
+
+    private var themeEmptyCellColor: UIColor {
+        // 深蓝凹槽：夜间模式更深的凹陷感，日间保持浅蓝凹槽
+        nightModeEnabled ? UIColor(hex: "#020912") : UIColor(hex: "#1A3566")
+    }
+
+    private var themeEmptyCellStrokeColor: UIColor {
+        // 亮蓝描边：凹陷边缘的高光
+        nightModeEnabled ? UIColor(hex: "#4A7ACC").withAlphaComponent(0.55) : UIColor(hex: "#5B9FFF").withAlphaComponent(0.7)
+    }
+
+    private var themeEmptyCellInnerShadowColor: UIColor {
+        // 内阴影：模拟凹槽深度
+        nightModeEnabled ? UIColor(hex: "#010608").withAlphaComponent(0.6) : UIColor(hex: "#0A1F4A").withAlphaComponent(0.5)
+    }
+
+    private var themePanelFillColor: UIColor {
+        nightModeEnabled ? UIColor(hex: "#071942").withAlphaComponent(0.88) : UIColor(hex: "#0F55C5").withAlphaComponent(0.74)
+    }
+
+    private var themePanelStrokeColor: UIColor {
+        nightModeEnabled ? UIColor(hex: "#4B7DFF").withAlphaComponent(0.44) : UIColor(hex: "#69C7FF").withAlphaComponent(0.68)
+    }
+
+    private var themeRowFillColor: UIColor {
+        nightModeEnabled ? UIColor(hex: "#0A2259").withAlphaComponent(0.88) : UIColor(hex: "#1466D6").withAlphaComponent(0.72)
+    }
+
+    private var themeLinkRowFillColor: UIColor {
+        nightModeEnabled ? UIColor(hex: "#0A255F").withAlphaComponent(0.9) : UIColor(hex: "#1265D8").withAlphaComponent(0.82)
+    }
+
+    private func themedButtonFill(_ fillColor: UIColor) -> UIColor {
+        nightModeEnabled ? UIColor(hex: "#0C3E95") : UIColor(hex: "#10A8F6")
+    }
+
+    private var themePrimaryButtonStrokeColor: UIColor {
+        nightModeEnabled ? UIColor(hex: "#6FB8FF").withAlphaComponent(0.48) : UIColor(hex: "#A9F0FF").withAlphaComponent(0.82)
+    }
+
+    private var themePrimaryButtonTextColor: UIColor {
+        .white
+    }
+
+    private func updateThemeChrome() {
+        menuButton.fillColor = themedButtonFill(DesignSystem.Colors.buttonBackground)
+        restartHudButton.fillColor = themedButtonFill(DesignSystem.Colors.buttonBackground)
+        hintHudButton.fillColor = themedButtonFill(DesignSystem.Colors.buttonSecondaryBackground)
+    }
+
+    private func rebuildHUDCards() {
+        let oldNextCard = nextCardNode
+        let oldScoreCard = scoreCardNode
+
+        let nextSize = DesignSystem.Layout.nextCardSize
+        let scoreSize = DesignSystem.Layout.scoreCardSize
+
+        let nextPosition = oldNextCard?.position ?? .zero
+        let scorePosition = oldScoreCard?.position ?? .zero
+
+        nextTitleLabel.removeFromParent()
+        nextPreviewNode.removeFromParent()
+        scoreTitleLabel.removeFromParent()
+        scoreValueLabel.removeFromParent()
+        oldNextCard?.removeFromParent()
+        oldScoreCard?.removeFromParent()
+
+        nextCardNode = makeNextHUDCard(size: nextSize)
+        nextCardNode.zPosition = 30
+        nextCardNode.position = nextPosition
+        nextCardNode.addChild(nextTitleLabel)
+        nextCardNode.addChild(nextPreviewNode)
+        addChild(nextCardNode)
+
+        scoreCardNode = makeHUDCard(size: scoreSize)
+        scoreCardNode.zPosition = 30
+        scoreCardNode.position = scorePosition
+        scoreCardNode.addChild(scoreTitleLabel)
+        scoreCardNode.addChild(scoreValueLabel)
+        addChild(scoreCardNode)
+    }
 
     private func makeLabel(font: UIFont, color: UIColor) -> SKLabelNode {
         let label = SKLabelNode(fontNamed: font.fontName)
@@ -2255,9 +2641,9 @@ final class GameScene: SKScene {
         name: String
     ) -> SKShapeNode {
         let button = SKShapeNode(rectOf: size, cornerRadius: size.height / 2)
-        button.fillColor = fillColor
-        button.strokeColor = UIColor.white.withAlphaComponent(0.42)
-        button.lineWidth = 2
+        button.fillColor = themedButtonFill(fillColor)
+        button.strokeColor = themePrimaryButtonStrokeColor
+        button.lineWidth = 2.5
         button.name = name
 
         // 顶部高光条（更厚更有质感）
@@ -2266,14 +2652,14 @@ final class GameScene: SKScene {
             rectOf: CGSize(width: size.width * 0.82, height: shineHeight),
             cornerRadius: shineHeight / 2
         )
-        shine.fillColor = UIColor.white.withAlphaComponent(0.28)
+        shine.fillColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.18 : 0.3)
         shine.strokeColor = .clear
         shine.position = CGPoint(x: 0, y: size.height * 0.3)
         shine.name = name
         button.addChild(shine)
 
         // 文字
-        let label = makeLabel(font: DesignSystem.Fonts.buttonFont(), color: textColor)
+        let label = makeLabel(font: DesignSystem.Fonts.buttonFont(), color: themePrimaryButtonTextColor)
         if size.height < 34 {
             label.fontSize = DesignSystem.Fonts.hudSmallFont().pointSize
         }
@@ -2292,8 +2678,8 @@ final class GameScene: SKScene {
         name: String
     ) -> SKShapeNode {
         let button = SKShapeNode(circleOfRadius: diameter / 2)
-        button.fillColor = fillColor
-        button.strokeColor = UIColor.white.withAlphaComponent(0.48)
+        button.fillColor = themedButtonFill(fillColor)
+        button.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.28 : 0.48)
         button.lineWidth = 2
         button.name = name
 
@@ -2348,10 +2734,10 @@ final class GameScene: SKScene {
 
         // 整行背景
         let rowBg = SKShapeNode(rectOf: CGSize(width: 296, height: 50), cornerRadius: 16)
-        rowBg.fillColor = DesignSystem.Colors.glassCardBg
+        rowBg.fillColor = nightModeEnabled ? UIColor(hex: "#071A42").withAlphaComponent(0.9) : DesignSystem.Colors.glassCardBg
         rowBg.strokeColor = isActive
-            ? DesignSystem.Colors.goldWarm.withAlphaComponent(0.35)
-            : DesignSystem.Colors.separator
+            ? DesignSystem.Colors.goldWarm.withAlphaComponent(nightModeEnabled ? 0.26 : 0.35)
+            : UIColor.white.withAlphaComponent(nightModeEnabled ? 0.08 : 0.12)
         rowBg.lineWidth = 1
         rowBg.name = name
         rowBg.zPosition = 0
@@ -2416,26 +2802,34 @@ final class GameScene: SKScene {
         size: CGSize
     ) -> SKNode {
         let rowNode = SKNode()
+        rowNode.name = name
+
+        let hitArea = SKShapeNode(rectOf: size, cornerRadius: 18)
+        hitArea.fillColor = UIColor.white.withAlphaComponent(0.001)
+        hitArea.strokeColor = .clear
+        hitArea.name = name
+        hitArea.zPosition = 20
+        rowNode.addChild(hitArea)
 
         let rowBg = SKShapeNode(rectOf: size, cornerRadius: 18)
-        rowBg.fillColor = UIColor(hex: "#1466D6").withAlphaComponent(0.72)
-        rowBg.strokeColor = UIColor.white.withAlphaComponent(0.22)
+        rowBg.fillColor = themeRowFillColor
+        rowBg.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.14 : 0.22)
         rowBg.lineWidth = 1.4
         rowBg.name = name
         rowBg.zPosition = 0
         rowNode.addChild(rowBg)
 
-        let shine = SKShapeNode(rectOf: CGSize(width: size.width - 18, height: 1.5), cornerRadius: 0.75)
-        shine.fillColor = UIColor.white.withAlphaComponent(0.18)
+        let shine = SKShapeNode(rectOf: CGSize(width: size.width - 22, height: 1.2), cornerRadius: 0.6)
+        shine.fillColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.08 : 0.14)
         shine.strokeColor = .clear
         shine.position = CGPoint(x: 0, y: size.height / 2 - 5)
         shine.name = name
         shine.zPosition = 1
         rowNode.addChild(shine)
 
-        let iconBoxSize = CGSize(width: 56, height: 56)
+        let iconBoxSize = CGSize(width: 48, height: 48)
         let iconX = -size.width / 2 + 42
-        let iconBox = SKShapeNode(rectOf: iconBoxSize, cornerRadius: 14)
+        let iconBox = SKShapeNode(rectOf: iconBoxSize, cornerRadius: 13)
         iconBox.fillColor = iconColor
         iconBox.strokeColor = UIColor.white.withAlphaComponent(0.38)
         iconBox.lineWidth = 1.2
@@ -2444,15 +2838,15 @@ final class GameScene: SKScene {
         iconBox.zPosition = 2
         rowNode.addChild(iconBox)
 
-        let iconHighlight = SKShapeNode(rectOf: CGSize(width: 42, height: 10), cornerRadius: 5)
-        iconHighlight.fillColor = UIColor.white.withAlphaComponent(0.22)
+        let iconHighlight = SKShapeNode(rectOf: CGSize(width: 34, height: 8), cornerRadius: 4)
+        iconHighlight.fillColor = UIColor.white.withAlphaComponent(0.16)
         iconHighlight.strokeColor = .clear
-        iconHighlight.position = CGPoint(x: iconX, y: 17)
+        iconHighlight.position = CGPoint(x: iconX, y: 14)
         iconHighlight.name = name
         iconHighlight.zPosition = 3
         rowNode.addChild(iconHighlight)
 
-        let iconLabel = makeLabel(font: .systemFont(ofSize: 26, weight: .bold), color: .white)
+        let iconLabel = makeLabel(font: .systemFont(ofSize: icon.count > 1 ? 15 : 22, weight: .black), color: .white)
         iconLabel.text = icon
         iconLabel.name = name
         iconLabel.position = CGPoint(x: iconX, y: -1)
@@ -2462,7 +2856,7 @@ final class GameScene: SKScene {
         let textX = -size.width / 2 + 86
         let titleLabel = makeLabel(font: DesignSystem.Fonts.cardTitleFont(), color: .white)
         titleLabel.horizontalAlignmentMode = .left
-        titleLabel.fontSize = 18
+        titleLabel.fontSize = 17
         titleLabel.text = title
         titleLabel.name = name
         titleLabel.position = CGPoint(x: textX, y: 12)
@@ -2526,62 +2920,93 @@ final class GameScene: SKScene {
         return node
     }
 
-    private func makeNextHUDCard(size: CGSize) -> SKShapeNode {
-        let cornerRadius = size.height * 0.38
+    private func makeNextHUDCard(size: CGSize) -> SKNode {
+        let cornerRadius = size.height / 2
+        let root = SKNode()
+
+        let outerGlow = SKShapeNode(rectOf: CGSize(width: size.width + 4, height: size.height + 4), cornerRadius: cornerRadius + 2)
+        outerGlow.fillColor = .clear
+        outerGlow.strokeColor = nightModeEnabled
+            ? UIColor(hex: "#4F8DFF").withAlphaComponent(0.18)
+            : UIColor(hex: "#6AD9FF").withAlphaComponent(0.28)
+        outerGlow.lineWidth = 3
+        outerGlow.zPosition = 28
+        root.addChild(outerGlow)
+
         let card = SKShapeNode(rectOf: size, cornerRadius: cornerRadius)
-        card.fillColor = UIColor(hex: "#0D7DE8").withAlphaComponent(0.9)
-        card.strokeColor = UIColor(hex: "#8BE9FF").withAlphaComponent(0.72)
+        card.fillColor = nightModeEnabled ? UIColor(hex: "#061E4B").withAlphaComponent(0.96) : UIColor(hex: "#0B5EC8").withAlphaComponent(0.92)
+        card.strokeColor = nightModeEnabled ? UIColor(hex: "#4F8DFF").withAlphaComponent(0.42) : UIColor(hex: "#7EDFFF").withAlphaComponent(0.58)
         card.lineWidth = 2
         card.zPosition = 29
+        root.addChild(card)
 
-        let inner = SKShapeNode(rectOf: CGSize(width: size.width - 8, height: size.height - 8), cornerRadius: cornerRadius - 4)
+        let inner = SKShapeNode(rectOf: CGSize(width: size.width - 8, height: size.height - 8), cornerRadius: max(1, cornerRadius - 4))
         inner.fillColor = .clear
-        inner.strokeColor = UIColor.white.withAlphaComponent(0.14)
+        inner.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.06 : 0.1)
         inner.lineWidth = 1
         inner.zPosition = 1
         card.addChild(inner)
 
         let shine = SKShapeNode(
-            rectOf: CGSize(width: size.width - 18, height: 10),
-            cornerRadius: 5
+            rectOf: CGSize(width: size.width - 16, height: 8),
+            cornerRadius: 4
         )
-        shine.fillColor = UIColor.white.withAlphaComponent(0.24)
+        shine.fillColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.12 : 0.2)
         shine.strokeColor = .clear
         shine.position = CGPoint(x: 0, y: size.height * 0.28)
         shine.zPosition = 2
         card.addChild(shine)
 
-        return card
+        return root
     }
 
-    private func makeHUDCard(size: CGSize) -> SKShapeNode {
+    private func makeHUDCard(size: CGSize) -> SKNode {
         let cornerRadius = min(22, size.height * 0.28)
+        let root = SKNode()
+
+        let outerGlow = SKShapeNode(rectOf: CGSize(width: size.width + 8, height: size.height + 8), cornerRadius: cornerRadius + 4)
+        outerGlow.fillColor = .clear
+        outerGlow.strokeColor = nightModeEnabled
+            ? UIColor(hex: "#4F8DFF").withAlphaComponent(0.3)
+            : UIColor(hex: "#8BE9FF").withAlphaComponent(0.42)
+        outerGlow.lineWidth = 4
+        outerGlow.zPosition = 28
+        root.addChild(outerGlow)
+
         let card = SKShapeNode(rectOf: size, cornerRadius: cornerRadius)
-        card.fillColor = DesignSystem.Colors.cardBackground
-        card.strokeColor = UIColor.white.withAlphaComponent(0.42)
-        card.lineWidth = 2
+        card.fillColor = nightModeEnabled ? UIColor(hex: "#061844").withAlphaComponent(0.98) : UIColor(hex: "#083D9F").withAlphaComponent(0.94)
+        card.strokeColor = nightModeEnabled ? UIColor(hex: "#74BFFF").withAlphaComponent(0.5) : UIColor(hex: "#B5F5FF").withAlphaComponent(0.72)
+        card.lineWidth = 3
         card.zPosition = 29
+        root.addChild(card)
 
         // 顶部高光（精致内高光）
-        let shineH = max(4, size.height * 0.13)
+        let shineH = max(4, size.height * 0.14)
         let shine = SKShapeNode(
-            rectOf: CGSize(width: size.width - 16, height: shineH),
+            rectOf: CGSize(width: size.width - 18, height: shineH),
             cornerRadius: shineH / 2
         )
-        shine.fillColor = UIColor.white.withAlphaComponent(0.2)
+        shine.fillColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.12 : 0.2)
         shine.strokeColor = .clear
         shine.position = CGPoint(x: 0, y: size.height * 0.3)
         card.addChild(shine)
 
-        return card
+        let bottomEdge = SKShapeNode(rectOf: CGSize(width: size.width - 10, height: 5), cornerRadius: 2.5)
+        bottomEdge.fillColor = UIColor.black.withAlphaComponent(nightModeEnabled ? 0.3 : 0.2)
+        bottomEdge.strokeColor = .clear
+        bottomEdge.position = CGPoint(x: 0, y: -size.height / 2 + 3)
+        bottomEdge.zPosition = 1
+        card.addChild(bottomEdge)
+
+        return root
     }
 
     /// 玻璃质感卡片（游戏化 Menu 页面用）
     private func makeGlassCard(size: CGSize) -> SKShapeNode {
         let cornerRadius: CGFloat = 24
         let card = SKShapeNode(rectOf: size, cornerRadius: cornerRadius)
-        card.fillColor = DesignSystem.Colors.glassCardBg
-        card.strokeColor = DesignSystem.Colors.glassCardStroke
+        card.fillColor = nightModeEnabled ? UIColor(hex: "#061636").withAlphaComponent(0.92) : DesignSystem.Colors.glassCardBg
+        card.strokeColor = nightModeEnabled ? UIColor(hex: "#4B7DFF").withAlphaComponent(0.22) : DesignSystem.Colors.glassCardStroke
         card.lineWidth = 1.5
 
         // 底部投影（厚重感）
@@ -2605,20 +3030,20 @@ final class GameScene: SKScene {
 
     private func makeGamePanel(size: CGSize) -> SKShapeNode {
         let card = makeGlassCard(size: size)
-        card.fillColor = UIColor(hex: "#0F55C5").withAlphaComponent(0.74)
-        card.strokeColor = UIColor(hex: "#69C7FF").withAlphaComponent(0.68)
+        card.fillColor = themePanelFillColor
+        card.strokeColor = themePanelStrokeColor
         card.lineWidth = 2
 
         let inner = SKShapeNode(rectOf: CGSize(width: size.width - 10, height: size.height - 10), cornerRadius: 22)
         inner.fillColor = .clear
-        inner.strokeColor = UIColor.white.withAlphaComponent(0.18)
+        inner.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.1 : 0.18)
         inner.lineWidth = 1
         inner.zPosition = 2
         card.addChild(inner)
 
         let glow = SKShapeNode(rectOf: CGSize(width: size.width + 4, height: size.height + 4), cornerRadius: 26)
         glow.fillColor = .clear
-        glow.strokeColor = DesignSystem.Colors.backgroundGlow.withAlphaComponent(0.28)
+        glow.strokeColor = (nightModeEnabled ? UIColor(hex: "#446CFF") : DesignSystem.Colors.backgroundGlow).withAlphaComponent(nightModeEnabled ? 0.16 : 0.28)
         glow.lineWidth = 4
         glow.zPosition = -2
         card.addChild(glow)
@@ -2630,8 +3055,8 @@ final class GameScene: SKScene {
         let root = SKNode()
         let size = CGSize(width: 142, height: 38)
         let bg = SKShapeNode(rectOf: size, cornerRadius: 19)
-        bg.fillColor = UIColor(hex: "#123F9C").withAlphaComponent(0.92)
-        bg.strokeColor = UIColor.white.withAlphaComponent(0.32)
+        bg.fillColor = nightModeEnabled ? UIColor(hex: "#061B4D").withAlphaComponent(0.94) : UIColor(hex: "#123F9C").withAlphaComponent(0.92)
+        bg.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.18 : 0.32)
         bg.lineWidth = 1.4
         root.addChild(bg)
 
@@ -2671,7 +3096,8 @@ final class GameScene: SKScene {
     private func makeAboutLogo() -> SKNode {
         let root = SKNode()
         let glow = SKShapeNode(circleOfRadius: 58)
-        glow.fillColor = DesignSystem.Colors.backgroundGlow.withAlphaComponent(0.24)
+        glow.fillColor = (nightModeEnabled ? UIColor(hex: "#596CFF") : DesignSystem.Colors.backgroundGlow)
+            .withAlphaComponent(nightModeEnabled ? 0.14 : 0.24)
         glow.strokeColor = .clear
         root.addChild(glow)
 
@@ -2700,9 +3126,16 @@ final class GameScene: SKScene {
     private func makeSmallLinkRow(icon: String, iconColor: UIColor, title: String, name: String, size: CGSize) -> SKNode {
         let row = SKNode()
         row.name = name
+        let hitArea = SKShapeNode(rectOf: size, cornerRadius: 15)
+        hitArea.fillColor = UIColor.white.withAlphaComponent(0.001)
+        hitArea.strokeColor = .clear
+        hitArea.name = name
+        hitArea.zPosition = 20
+        row.addChild(hitArea)
+
         let bg = SKShapeNode(rectOf: size, cornerRadius: 15)
-        bg.fillColor = UIColor(hex: "#1265D8").withAlphaComponent(0.82)
-        bg.strokeColor = UIColor.white.withAlphaComponent(0.24)
+        bg.fillColor = themeLinkRowFillColor
+        bg.strokeColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.14 : 0.24)
         bg.lineWidth = 1.2
         bg.name = name
         bg.zPosition = 1
@@ -2744,7 +3177,7 @@ final class GameScene: SKScene {
 
     private func makeHistoryTabs() -> SKNode {
         let root = SKNode()
-        let active = makeSmallLinkRow(icon: "🏆", iconColor: DesignSystem.Colors.goldWarm, title: "排行榜", name: NodeName.leaderboardButton, size: CGSize(width: 150, height: 46))
+        let active = makeSmallLinkRow(icon: "榜", iconColor: DesignSystem.Colors.goldWarm, title: "排行榜", name: NodeName.leaderboardButton, size: CGSize(width: 150, height: 46))
         active.position = CGPoint(x: -78, y: 0)
         active.setScale(0.86)
         root.addChild(active)
@@ -2762,13 +3195,13 @@ final class GameScene: SKScene {
         let root = SKNode()
         let size = CGSize(width: 300, height: 72)
         let bg = SKShapeNode(rectOf: size, cornerRadius: 20)
-        bg.fillColor = UIColor(hex: "#1265D8").withAlphaComponent(0.8)
-        bg.strokeColor = UIColor(hex: "#69C7FF").withAlphaComponent(0.48)
+        bg.fillColor = nightModeEnabled ? UIColor(hex: "#0A2259").withAlphaComponent(0.88) : UIColor(hex: "#1265D8").withAlphaComponent(0.8)
+        bg.strokeColor = (nightModeEnabled ? UIColor(hex: "#4B7DFF") : UIColor(hex: "#69C7FF")).withAlphaComponent(nightModeEnabled ? 0.34 : 0.48)
         bg.lineWidth = 1.4
         root.addChild(bg)
 
-        let trophy = makeLabel(font: .systemFont(ofSize: 34, weight: .black), color: DesignSystem.Colors.goldAccent)
-        trophy.text = "🏆"
+        let trophy = makeLabel(font: .systemFont(ofSize: 24, weight: .black), color: DesignSystem.Colors.goldAccent)
+        trophy.text = "★"
         trophy.position = CGPoint(x: -118, y: 0)
         root.addChild(trophy)
 
@@ -2793,8 +3226,8 @@ final class GameScene: SKScene {
         fill.position = CGPoint(x: -7 - 65 + fillWidth / 2, y: -14)
         root.addChild(fill)
 
-        let chest = makeLabel(font: .systemFont(ofSize: 31, weight: .black), color: DesignSystem.Colors.goldAccent)
-        chest.text = "🎁"
+        let chest = makeLabel(font: .systemFont(ofSize: 24, weight: .black), color: DesignSystem.Colors.goldAccent)
+        chest.text = "✓"
         chest.position = CGPoint(x: 122, y: 0)
         root.addChild(chest)
 
@@ -2805,26 +3238,24 @@ final class GameScene: SKScene {
     private func makeGoldButton(size: CGSize, text: String, name: String?) -> SKShapeNode {
         let cornerRadius = size.height / 2
 
-        // 主体
         let button = SKShapeNode(rectOf: size, cornerRadius: cornerRadius)
-        button.fillColor = DesignSystem.Colors.primaryButtonGold
-        button.strokeColor = .clear
+        button.fillColor = themedButtonFill(DesignSystem.Colors.buttonBackground)
+        button.strokeColor = themePrimaryButtonStrokeColor
+        button.lineWidth = 2.5
         button.name = name
         button.zPosition = 1
 
-        // 顶部高光
-        let shineH = max(4, size.height * 0.18)
-        let shine = SKShapeNode(rectOf: CGSize(width: size.width - 12, height: shineH), cornerRadius: shineH / 2)
-        shine.fillColor = UIColor.white.withAlphaComponent(0.32)
+        let shineH = max(4, size.height * 0.16)
+        let shine = SKShapeNode(rectOf: CGSize(width: size.width - 18, height: shineH), cornerRadius: shineH / 2)
+        shine.fillColor = UIColor.white.withAlphaComponent(nightModeEnabled ? 0.18 : 0.3)
         shine.strokeColor = .clear
         shine.position = CGPoint(x: 0, y: size.height * 0.22)
         shine.zPosition = 2
         shine.name = name
 
-        // 文字
-        let label = makeLabel(font: DesignSystem.Fonts.primaryButtonFont(), color: DesignSystem.Colors.primaryButtonDark)
+        let label = makeLabel(font: DesignSystem.Fonts.primaryButtonFont(), color: themePrimaryButtonTextColor)
         label.text = text
-        label.position = CGPoint(x: 0, y: -size.height * 0.06)
+        label.position = CGPoint(x: 0, y: -1)
         label.zPosition = 3
         label.name = name
 
@@ -2891,6 +3322,37 @@ private enum ScenePhase {
     case settings
     case about
     case privacy
+}
+
+private struct UndoSnapshot {
+    let cells: [GridPosition: Tile]
+    let score: Int
+    let mergeStreak: Int
+    let previewValue: Int
+}
+
+private struct SavedGameState: Codable {
+    let version: Int
+    let score: Int
+    let previewValue: Int
+    let mergeStreak: Int
+    let remainingUndos: Int
+    let isGameOver: Bool
+    let cells: [SavedCell]
+    let undoStack: [SavedUndoSnapshot]
+}
+
+private struct SavedUndoSnapshot: Codable {
+    let cells: [SavedCell]
+    let score: Int
+    let mergeStreak: Int
+    let previewValue: Int
+}
+
+private struct SavedCell: Codable {
+    let row: Int
+    let col: Int
+    let value: Int
 }
 
 private enum MenuOverlayPage: Int, CaseIterable {

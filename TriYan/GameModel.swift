@@ -146,6 +146,15 @@ final class GameModel {
         cells.removeAll(keepingCapacity: true)
     }
 
+    func restore(cells: [GridPosition: Tile], score: Int) {
+        self.cells = cells
+        self.score = score
+    }
+
+    func snapshot() -> [GridPosition: Tile] {
+        cells
+    }
+
     func tile(at position: GridPosition) -> Tile? {
         guard isValid(position) else { return nil }
         return cells[position]

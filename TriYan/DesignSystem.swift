@@ -161,7 +161,7 @@ enum DesignSystem {
         static let hudTitleWidth: CGFloat = 88
         static let hudScoreWidth: CGFloat = 112
         static let hudButtonSize = CGSize(width: 36, height: 36)
-        static let previewTileSize = CGSize(width: 42, height: 42)
+        static let previewTileSize = CGSize(width: 32, height: 32)
         static let modalCardSize = CGSize(width: 314, height: 274)
         static let modalCornerRadius: CGFloat = 22
         static let modalButtonHeight: CGFloat = 48
@@ -170,8 +170,8 @@ enum DesignSystem {
         static let settingsCardSize = CGSize(width: 336, height: 338)
         static let infoCardSize = CGSize(width: 336, height: 376)
         static let titleCardSize = CGSize(width: 142, height: 52)
-        static let nextCardSize = CGSize(width: 124, height: 74)
-        static let scoreCardSize = CGSize(width: 230, height: 82)
+        static let nextCardSize = CGSize(width: 112, height: 60)
+        static let scoreCardSize = CGSize(width: 226, height: 88)
 
         static func gridSize(in view: SKView) -> CGFloat {
             view.bounds.width * gridWidthRatio
