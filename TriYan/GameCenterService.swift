@@ -13,7 +13,7 @@ struct AchievementProgress {
     let unlockedAt: Date?
 }
 
-final class GameCenterService {
+final class GameCenterService: NSObject, GKGameCenterControllerDelegate {
     static let shared = GameCenterService()
 
     private let leaderboardID = "com.xiaodao.triyan.highscore"
@@ -22,7 +22,7 @@ final class GameCenterService {
     private let unlockedAchievementDatesKey = "achievements.unlockedDates"
     private(set) var isAuthenticated = false
 
-    private init() {}
+    private override init() {}
 
     func syncHistoricalAchievements(score: Int, maxTile: Int, gamesPlayed: Int) {
         let unlocks = reportAchievements(score: score, maxTile: maxTile, gamesPlayed: gamesPlayed)
@@ -110,6 +110,40 @@ final class GameCenterService {
 
     func title(for identifier: String) -> String {
         achievementDefinitions.first { $0.identifier == identifier }?.title ?? "未知成就"
+    }
+
+    func presentDashboard() {
+        presentGameCenter(viewState: .default)
+    }
+
+    func presentLeaderboard() {
+        presentGameCenter(viewState: .leaderboards, leaderboardIdentifier: leaderboardID)
+    }
+
+    func presentAchievements() {
+        presentGameCenter(viewState: .achievements)
+    }
+
+    func gameCenterViewControllerDidFinish(_ gameCenterViewController: GKGameCenterViewController) {
+        gameCenterViewController.dismiss(animated: true)
+    }
+
+    private func presentGameCenter(
+        viewState: GKGameCenterViewControllerState,
+        leaderboardIdentifier: String? = nil
+    ) {
+        guard GKLocalPlayer.local.isAuthenticated else {
+            authenticateIfNeeded()
+            return
+        }
+
+        let controller = GKGameCenterViewController()
+        controller.gameCenterDelegate = self
+        controller.viewState = viewState
+        if let leaderboardIdentifier {
+            controller.leaderboardIdentifier = leaderboardIdentifier
+        }
+        Self.topViewController()?.present(controller, animated: true)
     }
 
     private func unlockedDateDictionary() -> [String: TimeInterval] {

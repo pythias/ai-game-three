@@ -13,11 +13,14 @@ final class AudioManager {
     private var lastSwipeFeedbackAt: CFTimeInterval = 0
     private var soundIDs: [String: SystemSoundID] = [:]
     private var isMuted: Bool
+    private var isMusicMuted: Bool
     private let mutedKey = "settings.audioMuted"
+    private let musicMutedKey = "settings.musicMuted"
     private let swipeFeedbackInterval: CFTimeInterval = 0.12
 
     private init() {
         isMuted = UserDefaults.standard.bool(forKey: mutedKey)
+        isMusicMuted = UserDefaults.standard.bool(forKey: musicMutedKey)
         try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
         preloadSoundEffects()
     }
@@ -29,7 +32,7 @@ final class AudioManager {
     // MARK: - Background Music
 
     func playBackgroundMusic() {
-        guard !isMuted else { return }
+        guard !isMusicMuted else { return }
         guard bgMusicPlayer == nil else { return }
 
         guard let url = Bundle.main.url(forResource: "bgm", withExtension: "mp3") else { return }
@@ -91,14 +94,21 @@ final class AudioManager {
     func toggleMute() {
         isMuted.toggle()
         UserDefaults.standard.set(isMuted, forKey: mutedKey)
-        if isMuted {
-            bgMusicPlayer?.volume = 0
-        } else {
-            bgMusicPlayer?.volume = 0.3
-        }
     }
 
     var muted: Bool { isMuted }
+
+    func toggleBackgroundMusic() {
+        isMusicMuted.toggle()
+        UserDefaults.standard.set(isMusicMuted, forKey: musicMutedKey)
+        if isMusicMuted {
+            stopBackgroundMusic()
+        } else {
+            playBackgroundMusic()
+        }
+    }
+
+    var musicMuted: Bool { isMusicMuted }
 
     // MARK: - Private
 
