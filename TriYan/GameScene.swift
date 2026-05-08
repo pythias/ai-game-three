@@ -15,6 +15,8 @@ final class GameScene: SKScene {
     private var backgroundTextureCache: [BackgroundTextureKey: SKTexture] = [:]
     private var backgroundNode: SKSpriteNode!
     private var gridNode: SKNode!
+    private var dangerOverlayNode: SKShapeNode?
+    private var comboToastNode: SKNode?
     private var previewTileNode: SKSpriteNode?
     private var previewTileValue: Int?
 
@@ -48,6 +50,7 @@ final class GameScene: SKScene {
     private var undoStack: [UndoSnapshot] = []
     private var remainingUndos = 3
     private var pendingSwipe: SwipeDirection?
+    private var gameMode: GameMode = .normal
     private var hapticsEnabled = UserDefaults.standard.object(forKey: "settings.hapticsEnabled") as? Bool ?? true
     private var nightModeEnabled = UserDefaults.standard.bool(forKey: "settings.nightModeEnabled")
     private let savedGameKey = "game.currentSavedState.v1"
@@ -71,6 +74,15 @@ final class GameScene: SKScene {
         formatter.dateFormat = "MM/dd HH:mm"
         return formatter
     }()
+
+    private static func dailyChallengeDateKey(for date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd"
+        return formatter.string(from: date)
+    }
 
     // MARK: - Lifecycle
 
@@ -267,6 +279,7 @@ final class GameScene: SKScene {
         let boardCenterY = (topBoardLimit + bottomBoardLimit) / 2
 
         layoutBackground(size: frame.size)
+        layoutDangerOverlay(size: frame.size)
         gridNode.position = CGPoint(x: frame.midX, y: boardCenterY)
 
         let rightInset = max(safeInsets.right, 0)
@@ -278,6 +291,7 @@ final class GameScene: SKScene {
         nextCardNode.position = CGPoint(x: frame.midX, y: nextCenterY)
 
         scoreCardNode.position = CGPoint(x: frame.midX, y: scoreCenterY)
+        bestValueLabel.position = CGPoint(x: frame.midX, y: scoreCenterY - DesignSystem.Layout.scoreCardSize.height / 2 - 14)
 
         let buttonGap: CGFloat = 18
         let buttonWidth = min(156, (frame.width - horizontalPadding * 2 - buttonGap) / 2)
@@ -300,6 +314,33 @@ final class GameScene: SKScene {
         backgroundNode.texture = backgroundTexture(size: size)
         backgroundNode.size = size
         backgroundNode.position = CGPoint(x: frame.midX, y: frame.midY)
+    }
+
+    private func layoutDangerOverlay(size: CGSize) {
+        let overlay: SKShapeNode
+        if let dangerOverlayNode {
+            overlay = dangerOverlayNode
+        } else {
+            overlay = SKShapeNode()
+            overlay.name = NodeName.dangerOverlay
+            overlay.fillColor = .clear
+            overlay.strokeColor = UIColor(hex: "#FF4F7A")
+            overlay.lineWidth = 7
+            overlay.glowWidth = 12
+            overlay.alpha = 0
+            overlay.zPosition = 24
+            overlay.isUserInteractionEnabled = false
+            addChild(overlay)
+            dangerOverlayNode = overlay
+        }
+
+        overlay.path = CGPath(rect: CGRect(
+            x: -size.width / 2 + 4,
+            y: -size.height / 2 + 4,
+            width: size.width - 8,
+            height: size.height - 8
+        ), transform: nil)
+        overlay.position = CGPoint(x: frame.midX, y: frame.midY)
     }
 
     private func layoutGridBackground(gridSize: CGFloat) {
@@ -447,6 +488,19 @@ final class GameScene: SKScene {
     // MARK: - Game Flow
 
     private func startNewGame() {
+        gameMode = .normal
+        spawner.configureNormalMode()
+        startGame(mode: .normal)
+    }
+
+    private func startDailyChallenge() {
+        let mode = GameMode.daily(dateKey: Self.dailyChallengeDateKey())
+        gameMode = mode
+        spawner.configureDailyMode(seed: mode.seed)
+        startGame(mode: mode)
+    }
+
+    private func startGame(mode: GameMode) {
         closeAllOverlays()
         scenePhase = .playing
         didRecordCurrentGame = false
@@ -456,6 +510,8 @@ final class GameScene: SKScene {
         currentGameAchievementIDs.removeAll()
         achievementToastNode?.removeFromParent()
         achievementToastNode = nil
+        comboToastNode?.removeFromParent()
+        comboToastNode = nil
         remainingUndos = 3
         undoStack.removeAll()
 
@@ -465,7 +521,7 @@ final class GameScene: SKScene {
         previewTileValue = nil
         spawner.reset(for: model.board)
 
-        if let pos1 = model.emptyPositions.randomElement() {
+        if let pos1 = spawner.choosePosition(from: model.emptyPositions) {
             let firstTile = spawner.takePreviewTile()
             model.place(firstTile, at: pos1)
             spawnTile(at: pos1, value: firstTile.value)
@@ -473,7 +529,7 @@ final class GameScene: SKScene {
             spawner.refreshPreview(for: model.board)
         }
 
-        if let pos2 = model.emptyPositions.randomElement() {
+        if let pos2 = spawner.choosePosition(from: model.emptyPositions) {
             let secondTile = spawner.takePreviewTile()
             model.place(secondTile, at: pos2)
             spawnTile(at: pos2, value: secondTile.value)
@@ -483,6 +539,7 @@ final class GameScene: SKScene {
 
         updateHUD()
         updateUndoBadge()
+        updateDangerState(animated: false)
         persistCurrentGameIfNeeded()
     }
 
@@ -586,7 +643,7 @@ final class GameScene: SKScene {
     private func finishMove(result: MoveResult) {
         applyMoveResultToTileNodes(result)
 
-        if let spawnPos = result.spawnCandidates.randomElement() {
+        if let spawnPos = spawner.choosePosition(from: result.spawnCandidates) {
             let spawnedTile = spawner.takePreviewTile()
             model.place(spawnedTile, at: spawnPos)
             spawnTile(at: spawnPos, value: spawnedTile.value)
@@ -596,6 +653,8 @@ final class GameScene: SKScene {
 
         updateHUD()
         showMergeFeedback(for: result)
+        showComboFeedbackIfNeeded(for: result)
+        updateDangerState(animated: true)
         unlockRealtimeAchievementsIfNeeded()
         isAnimating = false
 
@@ -1035,7 +1094,14 @@ final class GameScene: SKScene {
 
     private func updateHUD() {
         scoreValueLabel.text = formatScore(model.score)
-        bestValueLabel.text = ""
+        switch gameMode {
+        case .normal:
+            bestValueLabel.text = ""
+            bestValueLabel.alpha = 0
+        case .daily:
+            bestValueLabel.text = "每日挑战"
+            bestValueLabel.alpha = 1
+        }
         updatePreviewTile(animated: true)
         updateUndoBadge()
     }
@@ -1098,6 +1164,7 @@ final class GameScene: SKScene {
             }
 
             self.updateHUD()
+            self.updateDangerState(animated: true)
             self.persistCurrentGameIfNeeded()
             self.playImpact(.light)
             self.run(.wait(forDuration: 0.12)) { [weak self] in
@@ -1112,10 +1179,36 @@ final class GameScene: SKScene {
         hintHudButton.alpha = remainingUndos <= 0 ? 0.62 : 1
     }
 
+    private func updateDangerState(animated: Bool) {
+        guard let dangerOverlayNode else { return }
+        let emptyCount = model.emptyPositions.count
+        let targetAlpha: CGFloat
+        switch emptyCount {
+        case 0...2:
+            targetAlpha = 0.62
+        case 3...4:
+            targetAlpha = 0.34
+        default:
+            targetAlpha = 0
+        }
+
+        dangerOverlayNode.removeAllActions()
+        if targetAlpha > 0, animated {
+            let pulse = SKAction.sequence([
+                .fadeAlpha(to: targetAlpha, duration: 0.12),
+                .fadeAlpha(to: max(0.18, targetAlpha * 0.62), duration: 0.42),
+                .fadeAlpha(to: targetAlpha, duration: 0.32)
+            ])
+            dangerOverlayNode.run(.repeatForever(pulse))
+        } else {
+            dangerOverlayNode.run(.fadeAlpha(to: targetAlpha, duration: animated ? 0.16 : 0))
+        }
+    }
+
     private func restoreSavedGameIfAvailable() -> Bool {
         guard let data = UserDefaults.standard.data(forKey: savedGameKey),
               let saved = try? JSONDecoder().decode(SavedGameState.self, from: data),
-              saved.version == 1,
+              (1...3).contains(saved.version),
               !saved.isGameOver else {
             return false
         }
@@ -1134,9 +1227,26 @@ final class GameScene: SKScene {
         currentGameAchievementIDs.removeAll()
         achievementToastNode?.removeFromParent()
         achievementToastNode = nil
+        comboToastNode?.removeFromParent()
+        comboToastNode = nil
+
+        if let savedMode = saved.mode {
+            gameMode = savedMode.gameMode
+        } else {
+            gameMode = .normal
+        }
+        switch gameMode {
+        case .normal:
+            spawner.configureNormalMode()
+        case .daily:
+            spawner.configureDailyMode(seed: gameMode.seed)
+        }
 
         model.restore(cells: restoredCells, score: saved.score)
         spawner.forcePreview(value: saved.previewValue)
+        if let deterministicState = saved.deterministicSpawnerState {
+            spawner.deterministicState = deterministicState
+        }
         mergeStreak = saved.mergeStreak
         remainingUndos = min(3, max(0, saved.remainingUndos))
         undoStack = saved.undoStack.map {
@@ -1153,6 +1263,7 @@ final class GameScene: SKScene {
         rebuildTileNodes()
         updateHUD()
         updateUndoBadge()
+        updateDangerState(animated: false)
         return true
     }
 
@@ -1164,7 +1275,9 @@ final class GameScene: SKScene {
         }
 
         let state = SavedGameState(
-            version: 1,
+            version: 3,
+            mode: SavedGameMode(gameMode: gameMode),
+            deterministicSpawnerState: spawner.deterministicState,
             score: model.score,
             previewValue: spawner.previewTile.value,
             mergeStreak: mergeStreak,
@@ -1253,6 +1366,55 @@ final class GameScene: SKScene {
         } else {
             playImpact(.medium)
         }
+    }
+
+    private func showComboFeedbackIfNeeded(for result: MoveResult) {
+        let combo = result.merges.count
+        guard combo >= 2 else { return }
+
+        comboToastNode?.removeFromParent()
+
+        let container = SKNode()
+        container.zPosition = 61
+        container.position = CGPoint(x: frame.midX, y: gridNode.position.y + currentGridRadius() + 34)
+
+        let bg = SKShapeNode(rectOf: CGSize(width: 174, height: 46), cornerRadius: 23)
+        bg.fillColor = UIColor(hex: "#FFB21B")
+        bg.strokeColor = UIColor.white.withAlphaComponent(0.76)
+        bg.lineWidth = 2
+        bg.glowWidth = 7
+        container.addChild(bg)
+
+        let label = makeLabel(font: DesignSystem.Fonts.overlayTitleFont(), color: .white)
+        label.fontSize = 23
+        label.text = "COMBO x\(combo)"
+        label.position = CGPoint(x: 0, y: 1)
+        container.addChild(label)
+
+        container.setScale(0.68)
+        container.alpha = 0
+        addChild(container)
+        comboToastNode = container
+
+        let appear = SKAction.group([
+            .fadeIn(withDuration: 0.08),
+            .scale(to: 1.08, duration: 0.12)
+        ])
+        appear.timingMode = .easeOut
+        let settle = SKAction.scale(to: 1, duration: 0.08)
+        settle.timingMode = .easeInEaseOut
+        let float = SKAction.group([
+            .moveBy(x: 0, y: 18, duration: 0.7),
+            .fadeOut(withDuration: 0.7)
+        ])
+        container.run(.sequence([appear, settle, .wait(forDuration: 0.28), float, .removeFromParent()])) { [weak self] in
+            self?.comboToastNode = nil
+        }
+    }
+
+    private func currentGridRadius() -> CGFloat {
+        guard let view else { return 140 }
+        return currentGridSize(in: view) * 0.52
     }
 
     private func addMergeGlowEffect(merges: [MergeEvent]) {
@@ -1929,10 +2091,11 @@ final class GameScene: SKScene {
     private func buildSettingsContent(into page: SKNode, center: CGPoint, size: CGSize) {
         let rowWidth = size.width - 28
         let rowHeight: CGFloat = 58
-        let rowGap: CGFloat = 12
-        let topY = center.y + size.height / 2 - 54
+        let rowGap: CGFloat = 8
+        let topY = center.y + size.height / 2 - 46
 
         let rows: [(String, UIColor, String, String, SettingsRowAccessory, String)] = [
+            ("D", UIColor(hex: "#FFB21B"), "每日挑战", "今日固定棋局", .arrow, NodeName.dailyChallengeButton),
             ("S", UIColor(hex: "#B84DFF"), "音效", "合成、移动音效", .toggle(isOn: !audioManager.muted), NodeName.soundToggleButton),
             ("M", UIColor(hex: "#FF941F"), "背景音乐", "游戏背景音乐", .toggle(isOn: !audioManager.musicMuted), NodeName.musicToggleButton),
             ("V", UIColor(hex: "#20B8FF"), "震动反馈", "合成、移动震动", .toggle(isOn: hapticsEnabled), NodeName.hapticsToggleButton),
@@ -2462,6 +2625,10 @@ final class GameScene: SKScene {
             case NodeName.closeMenuButton:
                 audioManager.playButton()
                 closeAllOverlays()
+                return
+            case NodeName.dailyChallengeButton:
+                audioManager.playButton()
+                startDailyChallenge()
                 return
             case NodeName.soundToggleButton:
                 audioManager.toggleMute()
@@ -3334,6 +3501,8 @@ private struct UndoSnapshot {
 
 private struct SavedGameState: Codable {
     let version: Int
+    let mode: SavedGameMode?
+    let deterministicSpawnerState: UInt64?
     let score: Int
     let previewValue: Int
     let mergeStreak: Int
@@ -3354,6 +3523,45 @@ private struct SavedCell: Codable {
     let row: Int
     let col: Int
     let value: Int
+}
+
+private struct SavedGameMode: Codable {
+    let kind: String
+    let dateKey: String?
+
+    init(gameMode: GameMode) {
+        switch gameMode {
+        case .normal:
+            kind = "normal"
+            dateKey = nil
+        case .daily(let key):
+            kind = "daily"
+            dateKey = key
+        }
+    }
+
+    var gameMode: GameMode {
+        if kind == "daily", let dateKey {
+            return .daily(dateKey: dateKey)
+        }
+        return .normal
+    }
+}
+
+private enum GameMode: Equatable {
+    case normal
+    case daily(dateKey: String)
+
+    var seed: UInt64 {
+        switch self {
+        case .normal:
+            return 0
+        case .daily(let dateKey):
+            return dateKey.utf8.reduce(UInt64(0xC0FFEE)) { partial, byte in
+                (partial &* 1_099_511_628_211) ^ UInt64(byte)
+            }
+        }
+    }
 }
 
 private enum MenuOverlayPage: Int, CaseIterable {
@@ -3391,10 +3599,12 @@ private enum NodeName {
     static let gameOverHistoryButton = "gameOverHistoryButton"
     static let restartButton = "restartButton"
     static let hintButton = "hintButton"
+    static let dangerOverlay = "dangerOverlay"
     static let closeHistoryButton = "closeHistoryButton"
     static let menuHistoryButton = "menuHistoryButton"
     static let menuSettingsButton = "menuSettingsButton"
     static let closeMenuButton = "closeMenuButton"
+    static let dailyChallengeButton = "dailyChallengeButton"
     static let soundToggleButton = "soundToggleButton"
     static let musicToggleButton = "musicToggleButton"
     static let hapticsToggleButton = "hapticsToggleButton"
