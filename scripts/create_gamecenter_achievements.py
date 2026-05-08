@@ -31,6 +31,15 @@ class Achievement:
     color: str
 
 
+@dataclass(frozen=True)
+class Leaderboard:
+    identifier: str
+    reference_name: str
+    title: str
+    suffix: str
+    score_range_end: int
+
+
 ACHIEVEMENTS = [
     Achievement(
         "com.xiaodao.triyan.achievement.first_game",
@@ -265,6 +274,26 @@ ACHIEVEMENTS = [
 ]
 
 
+LEADERBOARDS = [
+    Leaderboard(
+        "com.xiaodao.triyan.highscore",
+        "TriYan High Score",
+        "最高分",
+        "分",
+        2_000_000_000,
+    ),
+] + [
+    Leaderboard(
+        f"com.xiaodao.triyan.tile.{value}.count",
+        f"TriYan Tile {value} Count",
+        f"{value} 最多",
+        "个",
+        2_000_000_000,
+    )
+    for value in [3, 6, 12, 24, 48, 96, 192, 384, 768, 1536, 3072, 6144, 12288, 24576]
+]
+
+
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -380,8 +409,26 @@ def existing_achievement_ids(client: ASCClient, detail_id: str):
     return result
 
 
+def existing_leaderboard_ids(client: ASCClient, detail_id: str):
+    response = client.request("GET", f"/gameCenterDetails/{detail_id}?include=gameCenterLeaderboards&limit[gameCenterLeaderboards]=50")
+    result = {}
+    for item in response.get("included", []):
+        if item.get("type") == "gameCenterLeaderboards":
+            attrs = item.get("attributes", {})
+            result[attrs.get("vendorIdentifier")] = item["id"]
+    return result
+
+
 def existing_localization(client: ASCClient, achievement_id: str, locale: str):
     response = client.request("GET", f"/gameCenterAchievements/{achievement_id}/localizations")
+    for item in response.get("data", []):
+        if item.get("attributes", {}).get("locale") == locale:
+            return item
+    return None
+
+
+def existing_leaderboard_localization(client: ASCClient, leaderboard_id: str, locale: str):
+    response = client.request("GET", f"/gameCenterLeaderboards/{leaderboard_id}/localizations")
     for item in response.get("data", []):
         if item.get("attributes", {}).get("locale") == locale:
             return item
@@ -416,6 +463,27 @@ def create_achievement(client: ASCClient, detail_id: str, achievement: Achieveme
     return client.request("POST", "/gameCenterAchievements", body)["data"]
 
 
+def create_leaderboard(client: ASCClient, detail_id: str, leaderboard: Leaderboard):
+    body = {
+        "data": {
+            "type": "gameCenterLeaderboards",
+            "attributes": {
+                "defaultFormatter": "INTEGER",
+                "referenceName": leaderboard.reference_name,
+                "vendorIdentifier": leaderboard.identifier,
+                "submissionType": "BEST_SCORE",
+                "scoreSortType": "DESC",
+                "scoreRangeStart": "0",
+                "scoreRangeEnd": str(leaderboard.score_range_end),
+            },
+            "relationships": {
+                "gameCenterDetail": {"data": {"type": "gameCenterDetails", "id": detail_id}}
+            },
+        }
+    }
+    return client.request("POST", "/gameCenterLeaderboards", body)["data"]
+
+
 def create_localization(client: ASCClient, achievement_id: str, achievement: Achievement):
     body = {
         "data": {
@@ -432,6 +500,25 @@ def create_localization(client: ASCClient, achievement_id: str, achievement: Ach
         }
     }
     return client.request("POST", "/gameCenterAchievementLocalizations", body)["data"]
+
+
+def create_leaderboard_localization(client: ASCClient, leaderboard_id: str, leaderboard: Leaderboard):
+    body = {
+        "data": {
+            "type": "gameCenterLeaderboardLocalizations",
+            "attributes": {
+                "locale": "zh-Hans",
+                "name": leaderboard.title,
+                "formatterOverride": "INTEGER",
+                "formatterSuffix": leaderboard.suffix,
+                "formatterSuffixSingular": leaderboard.suffix,
+            },
+            "relationships": {
+                "gameCenterLeaderboard": {"data": {"type": "gameCenterLeaderboards", "id": leaderboard_id}}
+            },
+        }
+    }
+    return client.request("POST", "/gameCenterLeaderboardLocalizations", body)["data"]
 
 
 def upload_image(client: ASCClient, localization_id: str, image_path: Path):
@@ -525,6 +612,19 @@ def main():
             localization = create_localization(client, created["id"], achievement)
         upload_image(client, localization["id"], icon_path)
         print(f"Ready achievement: {achievement.identifier}")
+
+    existing_leaderboards = existing_leaderboard_ids(client, detail_id)
+    for leaderboard in LEADERBOARDS:
+        if leaderboard.identifier in existing_leaderboards:
+            created = {"id": existing_leaderboards[leaderboard.identifier]}
+            print(f"Updating existing leaderboard: {leaderboard.identifier}")
+        else:
+            created = create_leaderboard(client, detail_id, leaderboard)
+
+        localization = existing_leaderboard_localization(client, created["id"], "zh-Hans")
+        if not localization:
+            create_leaderboard_localization(client, created["id"], leaderboard)
+        print(f"Ready leaderboard: {leaderboard.identifier}")
 
 
 if __name__ == "__main__":
